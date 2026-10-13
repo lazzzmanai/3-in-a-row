@@ -25,6 +25,8 @@
       cells: cells.slice(),
       moves: o.moves || 25,
       movesLeft: o.moves || 25,
+      bonuses: 0,
+      bonusMoves: 0,
       score: 0,
       seed: o.seed === undefined ? 1 : o.seed,
       rng: root.Match3.rngFrom(o.seed === undefined ? 1 : o.seed),
@@ -341,21 +343,251 @@
       return "";
     });
 
-    check("цель партии = 2000 очков для 25 ходов (число из sim_match3.js)", function () {
+    check("цель партии = 6000 очков для 25 ходов (выбрана по sim_match3.js)", function () {
       var g = M.newGame({ seed: 1 });
-      if (M.target(g) !== 2000) return "цель " + M.target(g) + " — пересчитай симуляцией и обнови";
-      if (M.target({ moves: 10 }) !== 800) return "цель не растёт пропорционально ходам";
+      if (M.target(g) !== 6000) return "цель " + M.target(g) + " — пересчитай симуляцией и обнови";
+      if (M.target({ moves: 10 }) !== 2400) return "цель не растёт пропорционально ходам";
+      return "";
+    });
+
+    // ══════════════════════════════ СПЕЦФИГУРЫ ══════════════════════════════
+    // Фон, на котором заведомо нет линий: значения 0..3, четыре вида из пяти.
+    function blank(rows, cols) {
+      var cells = [];
+      for (var r = 0; r < rows; r++) {
+        for (var c = 0; c < cols; c++) cells.push((c % 2) + 2 * (r % 2));
+      }
+      return cells;
+    }
+
+    function board5(rows, cols, edits) {
+      var cells = blank(rows || 7, cols || 7);
+      (edits || []).forEach(function (e) { cells[e[0] * (cols || 7) + e[1]] = e[2]; });
+      return boardFrom(cells, { rows: rows || 7, cols: cols || 7, kinds: 5 });
+    }
+
+    function countSpecials(game) {
+      return game.cells.filter(function (v) { return M.isSpecial(v); }).length;
+    }
+
+    check("четвёрка в ряд рождает бомбу и занимает клетку размена", function () {
+      // ДО хода на ряду нет тройки: пары (3,1)-(3,2) и одиночка (3,4), а четвёртый
+      // кристаллик приезжает сверху в (3,3)
+      var g = board5(7, 7, [[3, 1, 4], [3, 2, 4], [3, 4, 4], [2, 3, 4]]);
+      if (M.findRuns(g).length) return "на доске до хода уже есть линия — тест ничего не доказал";
+      var before = g.movesLeft;
+      var res = M.play(g, 2 * 7 + 3, 3 * 7 + 3);                  // опускаем четвёрку на место
+      if (!res.ok) return "ход отвергнут: " + res.reason;
+      var bombs = g.cells.filter(function (v) { return v === M.SPECIAL_BOMB; }).length;
+      if (bombs !== 1) return "бомб на поле " + bombs + ", ожидалась 1";
+      var born = (res.steps[1].spawn || []);
+      if (born.length !== 1 || born[0].at !== 3 * 7 + 3) return "бомба не в клетке размена: " + JSON.stringify(born);
+      if (res.steps[1].cleared.length !== 3) return "стёрто клеток " + res.steps[1].cleared.length + ", ожидалось 3";
+      if (res.steps[1].gained !== 50) return "очков за четвёрку с бомбой " + res.steps[1].gained + ", по правилу 60 − 10 = 50";
+      if (g.movesLeft !== before - 1) return "ход списан неверно: " + before + " → " + g.movesLeft;
+      return "";
+    });
+
+    check("пятёрка в ряд даёт +5 ходов и НЕ рождает фигурку", function () {
+      var g = board5(7, 7, [[3, 1, 4], [3, 2, 4], [3, 4, 4], [3, 5, 4], [2, 3, 4]]);
+      if (M.findRuns(g).length) return "на доске до хода уже есть линия";
+      var res = M.play(g, 2 * 7 + 3, 3 * 7 + 3);
+      if (!res.ok) return "ход отвергнут: " + res.reason;
+      if (countSpecials(g) !== 0) return "пятёрка почему-то родила спецфигуру";
+      if (g.bonusMoves !== 5) return "подарено ходов " + g.bonusMoves + ", ожидалось 5";
+      if (g.movesLeft !== 25 - 1 + 5) return "ходов осталось " + g.movesLeft + ", ожидалось 29";
+      if (res.steps[1].bonus !== 5) return "в шаге не записан бонус: " + JSON.stringify(res.steps[1].bonus);
+      return "";
+    });
+
+    check("«Т» (горизонталь + вертикаль) рождает звезду в пересечении", function () {
+      var g = board5(7, 7, [[2, 4, 4], [2, 5, 4], [3, 3, 4], [4, 3, 4], [1, 3, 4]]);
+      if (M.findRuns(g).length) return "на доске до хода уже есть линия";
+      var res = M.play(g, 1 * 7 + 3, 2 * 7 + 3);                  // опускаем уголок на место
+      if (!res.ok) return "ход отвергнут: " + res.reason;
+      var stars = g.cells.filter(function (v) { return v === M.SPECIAL_STAR; }).length;
+      if (stars !== 1) return "звёзд на поле " + stars + ", ожидалась 1";
+      if (res.steps[1].cleared.length !== 4) return "стёрто " + res.steps[1].cleared.length + ", ожидалось 4 (5 клеток «Т» минус пересечение)";
+      return "";
+    });
+
+    check("бомба при перемещении взрывает 3×3 вокруг клетки, куда её передвинули", function () {
+      var g = board5(7, 7);
+      g.cells[3 * 7 + 3] = M.SPECIAL_BOMB;
+      var res = M.play(g, 3 * 7 + 3, 3 * 7 + 4);
+      if (!res.ok) return "ход со спецфигурой отвергнут: " + res.reason;
+      var step = res.steps[1];
+      if (step.cleared.length !== 9) return "взрыв стёр " + step.cleared.length + " клеток, ожидалось 9";
+      if (countSpecials(g) !== 0) return "бомба осталась на поле после взрыва";
+      if (step.gained !== 90) return "очки взрыва " + step.gained + ", ожидалось 9×10 = 90";
+      if (g.movesLeft !== 24) return "ход со спецфигурой должен стоить ровно 1: осталось " + g.movesLeft;
+      return "";
+    });
+
+    check("взрыв у края обрезается полем, а не уходит в никуда", function () {
+      var g = board5(7, 7);
+      g.cells[0] = M.SPECIAL_BOMB;                                // левый верхний угол
+      var res = M.play(g, 0, 1);                                  // передвигаем на (0,1)
+      var step = res.steps[1];
+      // зона вокруг (0,1): строки 0..1, столбцы 0..2 = 6 клеток
+      if (step.cleared.length !== 6) return "у края стёрто " + step.cleared.length + ", ожидалось 6";
+      var bad = step.cleared.filter(function (i) { return i < 0 || i >= 49; });
+      return bad.length === 0 ? "" : "взрыв ушёл за пределы поля: " + bad;
+    });
+
+    check("звезда + обычная фигура стирает ВСЕ клетки этого вида", function () {
+      var g = board5(7, 7);
+      g.cells[3 * 7 + 3] = M.SPECIAL_STAR;
+      var victim = g.cells[3 * 7 + 4];
+      var where = [];
+      g.cells.forEach(function (v, i) { if (v === victim) where.push(i); });
+      if (where.length < 4) return "на доске слишком мало клеток вида " + victim + " — тест слабый";
+      var res = M.play(g, 3 * 7 + 3, 3 * 7 + 4);
+      if (!res.ok) return "ход отвергнут: " + res.reason;
+      var step = res.steps[1];                                   // только первый шаг: дальше каскады
+      var missing = where.filter(function (i) { return step.cleared.indexOf(i) < 0; });
+      if (missing.length) return "не стёрты клетки вида " + victim + ": " + missing.slice(0, 4);
+      if (step.cleared.indexOf(3 * 7 + 3) < 0) return "звезда не израсходована";
+      if (step.gained !== (where.length + 1) * 10) {
+        return "очки первого шага " + step.gained + ", ожидалось " + (where.length + 1) * 10 +
+               " (все клетки вида + сама звезда по 10)";
+      }
+      return "";
+    });
+
+    check("звезда + бомба: три фигуры становятся бомбами и сами не взрываются", function () {
+      var g = board5(7, 7);
+      g.cells[3 * 7 + 3] = M.SPECIAL_STAR;
+      g.cells[3 * 7 + 4] = M.SPECIAL_BOMB;
+      var res = M.play(g, 3 * 7 + 3, 3 * 7 + 4);
+      var step = res.steps[1];
+      if (step.cleared.length !== 2) return "стёрто " + step.cleared.length + ", ожидалось 2 (сами фигуры и ничего больше)";
+      if ((step.spawned || []).length !== 3) return "новых бомб " + (step.spawned || []).length + ", ожидалось 3";
+      var bombs = g.cells.filter(function (v) { return v === M.SPECIAL_BOMB; }).length;
+      if (bombs !== 3) return "бомб на поле " + bombs + ", ожидалось 3";
+      return "";
+    });
+
+    check("звезда + звезда: стирается всё поле, потом оно снова полное", function () {
+      var g = board5(7, 7);
+      g.cells[3 * 7 + 3] = M.SPECIAL_STAR;
+      g.cells[3 * 7 + 4] = M.SPECIAL_STAR;
+      var res = M.play(g, 3 * 7 + 3, 3 * 7 + 4);
+      if (res.steps[1].cleared.length !== 49) return "стёрто " + res.steps[1].cleared.length + " из 49";
+      if (g.cells.length !== 49) return "после падения клеток " + g.cells.length;
+      if (countSpecials(g) !== 0) return "на пустом поле возникли спецфигуры";
+      if (M.findRuns(g).length) return "после заполнения поле сразу с готовой линией";
+      return "";
+    });
+
+    check("цепная реакция: взрыв задевает вторую бомбу — взрываются обе", function () {
+      var g = board5(7, 7);
+      g.cells[3 * 7 + 3] = M.SPECIAL_BOMB;
+      g.cells[2 * 7 + 5] = M.SPECIAL_BOMB;                        // попадает в зону (3,4)
+      var res = M.play(g, 3 * 7 + 3, 3 * 7 + 4);
+      if (res.steps[1].cleared.length <= 9) return "вторая бомба не сработала: стёрто " + res.steps[1].cleared.length;
+      if (countSpecials(g) !== 0) return "после цепочки на поле осталась спецфигура";
+      if (res.special.bomb !== 2) return "в шаге записано взрывов " + JSON.stringify(res.special);
+      return "";
+    });
+
+    check("спецфигуры бесцветные: две бомбы рядом не считаются линией", function () {
+      var g = board5(7, 7);
+      g.cells[3 * 7 + 2] = M.SPECIAL_BOMB;
+      g.cells[3 * 7 + 3] = M.SPECIAL_BOMB;
+      g.cells[3 * 7 + 4] = M.SPECIAL_BOMB;
+      if (M.findRuns(g).length) return "findRuns посчитал три бомбы линией";
+      var h = board5(7, 7);
+      h.cells[3 * 7 + 2] = M.SPECIAL_STAR; h.cells[3 * 7 + 3] = M.SPECIAL_STAR; h.cells[3 * 7 + 4] = M.SPECIAL_STAR;
+      return M.findRuns(h).length ? "три звезды — тоже «линия»" : "";
+    });
+
+    check("hasMove: на мёртвом поле с бомбой ход есть (без неё — нет)", function () {
+      var found = 0;
+      for (var seed = 1; seed <= 4000 && found < 3; seed++) {
+        var rng = M.rngFrom(seed), cells = [];
+        for (var i = 0; i < 9; i++) cells.push(M.randInt(rng, 3));
+        var g = boardFrom(cells, { rows: 3, cols: 3, kinds: 3 });
+        if (M.findRuns(g).length) continue;
+        if (M.hasMove(g)) continue;                               // нужен именно тупик
+        found++;
+        g.cells[4] = M.SPECIAL_BOMB;
+        if (!M.hasMove(g)) return "тупиковое поле + бомба, а hasMove говорит «ходов нет»";
+        g.cells[4] = M.SPECIAL_STAR;
+        if (!M.hasMove(g)) return "тупиковое поле + звезда, а hasMove говорит «ходов нет»";
+      }
+      return found ? "" : "перебор не нашёл тупикового поля — тест ничего не доказал";
+    });
+
+    check("при каскаде спецфигуры не рождаются и заполнение их не даёт", function () {
+      var cascades = 0, problem = "";
+      for (var seed = 1; seed <= 400 && !problem; seed++) {
+        var g = playThrough(seed).game;
+        g = M.newGame({ seed: seed });
+        for (var s = 1; s <= 30; s++) {
+          var mv = firstValidMove(g);
+          if (!mv) break;
+          var res = M.play(g, mv[0], mv[1]);
+          if (!res.ok) break;
+          res.steps.forEach(function (step) {
+            if (step.chain > 1 && step.spawn && step.spawn.length) {
+              problem = "на каскаде ×" + step.chain + " родилась спецфигура";
+            }
+            (step.born || []).forEach(function (b) {
+              if (M.isSpecial(b.kind)) problem = "сверху прилетела спецфигура";
+              else if (typeof b.kind !== "number" || b.kind < 0 || b.kind >= g.kinds) {
+                problem = "сверху прилетело значение вне видов: " + b.kind;
+              }
+            });
+            if (step.chain > 2) cascades++;
+          });
+        }
+      }
+      if (problem) return problem;
+      return cascades > 20 ? "" : "слишком мало каскадов проверено: " + cascades;
+    });
+
+    check("на старте поля спецфигур нет (ни в большой партии, ни в маленькой)", function () {
+      for (var seed = 1; seed <= 200; seed++) {
+        if (countSpecials(M.newGame({ seed: seed }))) return "seed " + seed + ": старт с готовой спецфигурой";
+        if (countSpecials(M.newGame({ seed: seed, rows: 3, cols: 3, kinds: 3 }))) return "seed " + seed + ": 3×3 старт со спецфигурой";
+      }
+      return "";
+    });
+
+    check("бомба падает вместе с колонкой и остаётся бомбой (не теряется при падении)", function () {
+      // Вертикальная четвёрка (1,3)…(4,3) с дыркой в (3,3): кристаллик приезжает в дырку
+      // сбоку. Клетка размена — третья сверху, а под ней стёртая (4,3), значит после
+      // падения бомба должна уехать на строку ниже. Если движок оставит её на прежнем
+      // индексе, показ разойдётся с правилами, и эта проверка это увидит.
+      var g = board5(7, 7, [[1, 3, 4], [2, 3, 4], [4, 3, 4], [3, 2, 4]]);
+      if (M.findRuns(g).length) return "на доске до хода уже есть линия";
+      var res = M.play(g, 3 * 7 + 2, 3 * 7 + 3);
+      if (!res.ok) return "ход отвергнут: " + res.reason;
+      var step = res.steps[1];
+      if (!step.spawn || step.spawn.length !== 1) return "бомба не записана в шаг";
+      var atCell = step.spawn[0].at;
+      if (g.cells[atCell] !== M.SPECIAL_BOMB) {
+        return "шаг говорит «бомба в клетке " + atCell + "», а там " + g.cells[atCell] +
+               " — показ разойдётся с правилами";
+      }
+      if (atCell !== 4 * 7 + 3) return "бомба должна была уехать вниз с колонкой в (4,3), а оказалась в " + atCell;
       return "";
     });
 
     // ------------------------------------------------------------------ вся партия
-    check("партия из 25 ходов завершается сама", function () {
+    check("партия всегда заканчивается: ходов сыграно ровно «25 + подаренные»", function () {
+      var longest = 0, bonuses = 0;
       for (var seed = 1; seed <= 60; seed++) {
-        var run = playThrough(seed);
-        if (!run.game.over) return "seed " + seed + ": партия не закончилась";
-        if (run.played !== 25) return "seed " + seed + ": сыграно " + run.played + " ходов из 25";
-        if (run.refusals) return "seed " + seed + ": игра сама отказалась ходить (" + run.refusals + ")";
+        var g = playThrough(seed).game;
+        if (!g.over) return "seed " + seed + ": партия не закончилась";
+        var expected = g.moves + g.bonusMoves;
+        if (g.movesLeft !== 0) return "seed " + seed + ": ходов осталось " + g.movesLeft;
+        if (expected < g.moves) return "seed " + seed + ": подаренных ходов отрицательное число";
+        longest = Math.max(longest, expected);
+        bonuses += g.bonusMoves ? 1 : 0;
       }
+      if (longest > 200) return "бонусы раздули партию до " + longest + " ходов — нужен потолок";
       return "";
     });
 
@@ -432,7 +664,9 @@
         var left = a.game.score + "|" + a.game.cells.join(",") + "|" + a.played;
         var right = b.game.score + "|" + b.game.cells.join(",") + "|" + b.played;
         if (left !== right) return "seed " + seed + ": партия не воспроизводится";
-        if (a.played !== 25) return "seed " + seed + ": сыграно " + a.played + " ходов — часть ходов игра отвергла";
+        if (a.played !== a.game.moves + a.game.bonusMoves) {
+          return "seed " + seed + ": сыграно " + a.played + " — часть ходов игра отвергла";
+        }
       }
       return "";
     });
@@ -440,7 +674,10 @@
     check("1000 партий без исключений и без зависаний", function () {
       for (var seed = 1000; seed < 2000; seed++) {
         var run = playThrough(seed);
-        if (run.played > 25) return "seed " + seed + ": больше ходов, чем выдано";
+        var g = run.game;
+        if (run.played > g.moves + g.bonusMoves) return "seed " + seed + ": больше ходов, чем игра выдала";
+        if (!g.over) return "seed " + seed + ": партия не завершилась за отведённое число ходов";
+        if (g.cells.length !== 49) return "seed " + seed + ": поле неполное (" + g.cells.length + ")";
       }
       return "";
     });
