@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<!--
+  match3.html — экран игры «три в ряд» для Telegram Mini App.
+
+  Как это устроено (три файла, каждый про своё):
+    match3_core.js   — ПРАВИЛА. Ни картинки, ни Telegram. Проверяется скриптом.
+    match3.html      — ЭТОТ ФАЙЛ. Картинка, касания, анимация, счёт на экране.
+    Python-бот       — открывает игру по ссылке и принимает результат.
+
+  Визуальный план (осознанный выбор, а не дефолт):
+    · Молочный крем + какао-контур: пастель, как в арте питомца, а «взрослый» интерфейс
+      собран из спокойных серо-кремовых плашек.
+    · Пять кристалликов различаются СРАЗУ ДВУМЯ признаками — цветом и силуэтом
+      (круг, квадрат, таблетка, листик, купол). Это читается и без цвета, и в спешке,
+      и на маленьком экране: «очевидно-понятно» важнее красоты.
+    · Крупная смелая вещь одна — сами кристаллики (ореол + блик + тонкий контур).
+      Всё остальное тихое: одна строка сверху, одна подсказка снизу.
+    · Движение только в ответ на действие игрока: размен, падение, лопание, каскад.
+      Ничего не шевелится «просто так», пока человек думает.
+    · Системный шрифт, без внешних загрузок: игра должна открываться и по file://
+      на компьютере, и без интернета в самолёте.
+
+  Полезные параметры ссылки:
+    ?tok=АБВ   — токен партии от бота (вернём его в результате, бот узнает игрока)
+    ?seed=123  — зерно поля (когда бот начнёт перепроверять очки, поле выдаст он)
+    ?selftest=1— вместо игры список проверок правил (открыть и глазами, и в CI)
+-->
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Три в ряд</title>
+  <!-- Telegram подключает свой скрипт сам; вне Telegram его просто не будет (всё подстраховано ниже) -->
+  <script src="https://telegram.org/js/telegram-web-app.js?64"></script>
+  <script src="match3_core.js"></script>
+  <script src="match3_tests.js"></script>
+  <style>
+    :root {
+      color-scheme: light dark;
+      /* цвет + какао-контур — та же речь, что у арта питомца */
+      --cream: var(--tg-theme-bg-color, #FFF7F0);
+      --panel: #FDEBDD;
+      --line: #F0D6C4;
+      --ink: var(--tg-theme-text-color, #4A3B34);
+      --ink-soft: rgba(74, 59, 52, .58);
+      --shadow: rgba(74, 59, 52, .14);
+
+      --rose: #F6C9C4;
+      --sky: #C6E2F0;
+      --dandelion: #FBE2A6;
+      --mint: #CDEAD3;
+      --lilac: #DFD3F2;
+
+      --cell: min(12.4vw, 50px);
+      --gap: 3px;
+      --ease-out: cubic-bezier(.2, .8, .3, 1);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --cream: #23211F;
+        --panel: #2E2A27;
+        --line: #3B3531;
+        --ink: #F1E7DF;
+        --ink-soft: rgba(241, 231, 223, .6);
+        --shadow: rgba(0, 0, 0, .5);
+      }
+    }
+
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+    html, body { height: 100%; }
+
+    body {
+      margin: 0;
+      background: var(--cream);
+      color: var(--ink);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+      font-size: 16px;
+      line-height: 1.35;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      padding: max(10px, env(safe-area-inset-top)) 14px max(12px, env(safe-area-inset-bottom));
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: manipulation;
+    }
+
+    /* ------------------------------------------------------------- шапка поля */
+    .hud {
+      width: calc(var(--cell) * 7 + var(--gap) * 6);
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .score { display: flex; align-items: baseline; gap: 7px; }
+
+    .score-n {
+      font-size: 34px;
+      font-weight: 800;
+      letter-spacing: -.02em;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+    }
+
+    .score-n.bump { animation: bump .28s var(--ease-out); }
+    @keyframes bump { from { transform: scale(1); } 45% { transform: scale(1.14); } to { transform: scale(1); } }
+
+    .score-l, .quiet { font-size: 12.5px; color: var(--ink-soft); }
+
+    .side { text-align: right; font-size: 12.5px; color: var(--ink-soft); }
+    .side b {
+      display: inline-block; min-width: 1.6em; text-align: right;
+      font-size: 17px; font-weight: 700; color: var(--ink);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* цель — одна полоса с отметкой: видно, сколько осталось, без объяснений */
+    .goal {
+      width: calc(var(--cell) * 7 + var(--gap) * 6);
+      height: 7px;
+      border-radius: 99px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      position: relative;
+      overflow: hidden;
+    }
+    .goal i {
+      position: absolute; inset: 0 auto 0 0; width: 0%;
+      background: var(--rose);
+      border-radius: 99px;
+      transition: width .35s var(--ease-out);
+    }
+    .goal.hit i { background: var(--mint); }
+    .goal em {
+      position: absolute; top: 0; bottom: 0; width: 2px; background: var(--ink);
+      opacity: .5; font-style: normal;
+    }
+
+    /* ------------------------------------------------------------------ поле */
+    .board {
+      display: grid;
+      grid-template-columns: repeat(7, var(--cell));
+      grid-auto-rows: var(--cell);
+      gap: var(--gap);
+      padding: 9px;
+      border-radius: 20px;
+      background: var(--panel);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .55), 0 6px 18px var(--shadow);
+    }
+
+    .cell {
+      position: relative;
+      border: 0;
+      padding: 0;
+      margin: 0;
+      background: transparent;
+      border-radius: 14%;
+      box-shadow: inset 0 0 0 1px var(--line);   /* соты: видно, что сосед — только по сторонам */
+      cursor: pointer;
+    }
+    .cell:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+    .gem {
+      position: absolute;
+      inset: 4px;
+      border: 2px solid rgba(74, 59, 52, .78);   /* тонкий тёмный контур */
+      box-shadow: 0 2px 5px var(--shadow), 0 0 12px rgba(255, 255, 255, .5);  /* ореол */
+      display: block;
+    }
+    /* блик — тот же приём, что на мордочке питомца */
+    .gem::after {
+      content: "";
+      position: absolute;
+      top: 14%; left: 16%;
+      width: 26%; height: 20%;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, .8);
+    }
+
+    /* пять силуэтов × пять цветов: различие двойное, а не «на вкус» */
+    .k0 { background: var(--rose);      border-radius: 50%; }                                   /* круг     */
+    .k1 { background: var(--sky);       border-radius: 26%; }                                   /* квадрат  */
+    .k2 { background: var(--dandelion); border-radius: 50%; inset: 7px 11px; }                  /* таблетка */
+    .k3 { background: var(--mint);      border-radius: 50% 50% 50% 8%; }                         /* листик   */
+    .k4 { background: var(--lilac);     border-radius: 50% 50% 12% 12%; }                        /* купол    */
+
+    .cell.sel .gem { transform: scale(1.08); border-color: var(--ink); }
+
+    .gem.slide { animation: slide var(--dur, 190ms) var(--ease-out); }
+    @keyframes slide {
+      from { transform: translate(calc(var(--fx, 0) * (var(--cell) + var(--gap))),
+                                  calc(var(--fy, 0) * (var(--cell) + var(--gap)))); }
+      to   { transform: translate(0, 0); }
+    }
+
+    .gem.pop { animation: pop var(--dur, 200ms) ease-in forwards; }
+    @keyframes pop {
+      from { transform: scale(1); opacity: 1; }
+      40%  { transform: scale(1.22); opacity: .9; }
+      to   { transform: scale(.1); opacity: 0; }
+    }
+
+    .board.nope { animation: nope .3s ease-in-out; }
+    @keyframes nope { 0%,100% { transform: translateX(0); } 25% { transform: translateX(-5px); } 75% { transform: translateX(5px); } }
+
+    /* --------------------------------------------------------------- подпись */
+    .hint {
+      width: calc(var(--cell) * 7 + var(--gap) * 6);
+      font-size: 12.5px;
+      color: var(--ink-soft);
+      text-align: center;
+      min-height: 2.6em;
+    }
+
+    .toast {
+      position: fixed;
+      left: 50%; bottom: 18%;
+      transform: translateX(-50%);
+      background: var(--ink);
+      color: var(--cream);
+      padding: 7px 14px;
+      border-radius: 99px;
+      font-size: 13.5px;
+      font-weight: 600;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .18s ease-out;
+    }
+    .toast.on { opacity: .94; }
+
+    /* ------------------------------------------------------------ финальная */
+    .sheet {
+      position: fixed; inset: 0;
+      background: rgba(35, 33, 31, .38);
+      display: flex; align-items: center; justify-content: center;
+      padding: 18px;
+    }
+    .sheet[hidden] { display: none; }
+
+    .card {
+      width: min(340px, 100%);
+      background: var(--cream);
+      border-radius: 22px;
+      padding: 20px 18px 16px;
+      box-shadow: 0 14px 40px rgba(0, 0, 0, .28);
+      text-align: center;
+    }
+    .card h2 { margin: 0 0 4px; font-size: 19px; font-weight: 700; letter-spacing: -.01em; }
+    .card .big { font-size: 46px; font-weight: 800; letter-spacing: -.03em; font-variant-numeric: tabular-nums; margin: 2px 0 0; }
+    .card p { margin: 6px 0 14px; font-size: 13.5px; color: var(--ink-soft); }
+
+    .btns { display: flex; flex-direction: column; gap: 8px; }
+
+    button.act {
+      font: inherit; font-weight: 700;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 2px solid rgba(74, 59, 52, .78);
+      background: var(--dandelion);
+      color: var(--ink);
+      cursor: pointer;
+    }
+    button.act.secondary { background: var(--panel); font-weight: 600; }
+    button.act:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+    button.act[disabled] { opacity: .5; cursor: default; }
+
+    /* ----------------------------------------------------- режим самопроверки */
+    .tests { width: min(560px, 100%); font-size: 13.5px; }
+    .tests li { margin: 0 0 4px; list-style: none; }
+    .tests .bad { color: #B3402F; font-weight: 700; }
+    .tests .note { color: var(--ink-soft); }
+    .tests h1 { font-size: 17px; margin: 0 0 10px; }
+    .tests .sum { margin: 12px 0 0; font-weight: 700; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .gem.slide, .gem.pop, .score-n.bump, .board.nope { animation-duration: 1ms; }
+      .goal i { transition-duration: 1ms; }
+    }
+  </style>
+</head>
+<body>
+  <div class="hud">
+    <div class="score">
+      <span class="score-n" id="score">0</span>
+      <span class="score-l">очки</span>
+    </div>
+    <div class="side">
+      <div><b id="moves">25</b> <span id="movesWord">ходов</span></div>
+      <div>цель <b id="goaln">2000</b></div>
+      <div>рекорд <b id="best">—</b></div>
+    </div>
+  </div>
+
+  <div class="goal" id="goal" aria-hidden="true"><i id="goalfill"></i></div>
+
+  <div class="board" id="board" role="grid" aria-label="Поле три в ряд"></div>
+
+  <p class="hint" id="hint">Тронь кристаллик и потяни к соседу — или выбери два по очереди.</p>
+
+  <div class="toast" id="toast"></div>
+
+  <div class="sheet" id="sheet" hidden>
+    <div class="card">
+      <h2 id="endTitle">Партия окончена</h2>
+      <div class="big" id="endScore">0</div>
+      <p id="endNote"></p>
+      <div class="btns">
+        <button class="act" id="send">Передать боту</button>
+        <button class="act secondary" id="again">Ещё раз</button>
+        <button class="act secondary" id="close">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    "use strict";
+
+    // ------------------------------------------------------------------ окружение
+    var params = new URLSearchParams(location.search);
+    var TG = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
+    var TOKEN = (TG && TG.initDataUnsafe && TG.initDataUnsafe.start_param) || params.get("tok") || "";
+    var SELFTEST = params.get("selftest") === "1";
+
+    // правила пришли из match3_core.js; без него игра не начинается, и это видно
+    if (!window.Match3) {
+      document.body.innerHTML = "<p class='hint'>Не удалось загрузить правила (match3_core.js лежит рядом с этим файлом?).</p>";
+      throw new Error("Match3 не загружен");
+    }
+    var M = window.Match3;
+
+    var REDUCED = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    var SLIDE = REDUCED ? 10 : 190;
+    var POP = REDUCED ? 10 : 200;
+    var SHAPE = ["круг", "квадрат", "таблетка", "листик", "купол"];
+    var COLOR = ["малиновый", "голубой", "одуванчик", "мятный", "сиреневый"];
+
+    // --------------------------------------------------------------------- состояние
+    var game = null;
+    var cells = [];          // DOM-клетки, индекс = row*cols + col
+    var busy = false;        // идёт анимация — касания игнорируем, иначе игрок «сломает» каскад
+    var picked = -1;         // выбранная клетка (режим «выбери два по очереди»)
+    var dragFrom = -1;       // клетка, с которой начался свайп
+    var shown = 0;           // очки, показанные на экране (дорастают по ходу каскада)
+    var best = loadBest();
+
+    function loadBest() {
+      try { return Number(localStorage.getItem("laz.match3.best")) || 0; } catch (e) { return 0; }
+    }
+    function saveBest(n) { try { localStorage.setItem("laz.match3.best", String(n)); } catch (e) { /* приватный режим — и ладно */ } }
+
+    function plural(n, forms) {   // 1 ход / 2 хода / 5 ходов — как plural() в боте
+      var m10 = n % 10, m100 = n % 100;
+      if (m10 === 1 && m100 !== 11) return forms[0];
+      if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return forms[1];
+      return forms[2];
+    }
+
+    // ------------------------------------------------------------------------ разметка
+    function buildBoard() {
+      var board = document.getElementById("board");
+      board.innerHTML = "";
+      cells = [];
+      for (var i = 0; i < game.rows * game.cols; i++) {
+        var b = document.createElement("button");
+        b.className = "cell";
+        b.type = "button";
+        b.dataset.i = i;
+        b.setAttribute("role", "gridcell");
+        var g = document.createElement("span");
+        g.className = "gem";
+        b.appendChild(g);
+        board.appendChild(b);
+        cells.push(b);
+      }
+    }
+
+    function paint(list) {
+      for (var i = 0; i < cells.length; i++) {
+        var kind = list[i];
+        var gem = cells[i].firstChild;
+        gem.className = "gem k" + kind;
+        gem.textContent = "";
+        cells[i].setAttribute("aria-label",
+          COLOR[kind] + " " + SHAPE[kind] + ", строка " + (Math.floor(i / game.cols) + 1) +
+          ", столбец " + (i % game.cols + 1));
+      }
+    }
+
+    function slide(list, slides, dur) {
+      paint(list);
+      slides.forEach(function (s) {
+        var gem = cells[s.to] && cells[s.to].firstChild;
+        if (!gem) return;
+        gem.style.setProperty("--fx", s.dx);
+        gem.style.setProperty("--fy", s.dy);
+        gem.style.setProperty("--dur", dur + "ms");
+        gem.classList.add("slide");
+      });
+      window.setTimeout(function () {
+        slides.forEach(function (s) { if (cells[s.to]) cells[s.to].firstChild.classList.remove("slide"); });
+      }, dur + 30);
+    }
+
+    function pop(indices, dur) {
+      indices.forEach(function (i) {
+        var gem = cells[i] && cells[i].firstChild;
+        if (!gem) return;
+        gem.style.setProperty("--dur", dur + "ms");
+        gem.classList.add("pop");
+      });
+    }
+
+    var toastTimer = null;
+    function toast(text) {
+      var t = document.getElementById("toast");
+      t.textContent = text;
+      t.classList.add("on");
+      window.clearTimeout(toastTimer);
+      toastTimer = window.setTimeout(function () { t.classList.remove("on"); }, 900);
+    }
+
+    function haptic(style) {
+      try { if (TG && TG.HapticFeedback) TG.HapticFeedback.impactOccurred(style); } catch (e) { /* не критично */ }
+    }
+
+    // ------------------------------------------------------------------------- HUD
+    function hud() {
+      document.getElementById("score").textContent = shown;
+      var left = game.movesLeft;
+      document.getElementById("moves").textContent = left;
+      document.getElementById("movesWord").textContent = plural(left, ["ход", "хода", "ходов"]);
+      document.getElementById("best").textContent = best || "—";
+      var goal = M.target(game);
+      var pct = Math.min(100, Math.round(1000 * shown / goal) / 10);
+      var bar = document.getElementById("goal");
+      document.getElementById("goaln").textContent = goal;
+      document.getElementById("goalfill").style.width = pct + "%";
+      bar.classList.toggle("hit", shown >= goal);
+    }
+
+    // ---------------------------------------------------------------- ход игрока
+    function rowOf(i) { return Math.floor(i / game.cols); }
+    function colOf(i) { return i % game.cols; }
+
+    /** Превращает шаг движка в промежуточное поле для показа (движок уже посчитал всё сразу). */
+    function applyVisual(prev, step) {
+      var next = prev.slice();
+      step.moved.forEach(function (m) { next[m.to] = prev[m.from]; });
+      step.born.forEach(function (b) { next[b.to] = b.kind; });
+      return next;
+    }
+
+    function slidesOf(step) {
+      var out = [];
+      step.moved.forEach(function (m) {
+        out.push({ to: m.to, dx: colOf(m.from) - colOf(m.to), dy: rowOf(m.from) - rowOf(m.to) });
+      });
+      step.born.forEach(function (b) {
+        out.push({ to: b.to, dx: 0, dy: b.from - rowOf(b.to) });   // from отрицательный — сверху поля
+      });
+      return out;
+    }
+
+    function sleep(ms) { return new Promise(function (r) { window.setTimeout(r, ms); }); }
+
+    async function attempt(a, b) {
+      if (busy || !game || game.over) return;
+      busy = true;
+      setPicked(-1);
+
+      var before = game.cells.slice();
+      var res = M.play(game, a, b);
+
+      if (!res.ok) {
+        if (res.reason === "nomatch") {
+          // показываем, что размен был, и возвращаем на место: «не сошлось», а не «наказали»
+          var sw = before.slice();
+          sw[a] = before[b]; sw[b] = before[a];
+          slide(sw, [{ to: a, dx: colOf(b) - colOf(a), dy: rowOf(b) - rowOf(a) },
+                     { to: b, dx: colOf(a) - colOf(b), dy: rowOf(a) - rowOf(b) }], SLIDE);
+          await sleep(SLIDE);
+          slide(before, [{ to: a, dx: colOf(b) - colOf(a), dy: rowOf(b) - rowOf(a) },
+                         { to: b, dx: colOf(a) - colOf(b), dy: rowOf(a) - rowOf(b) }], SLIDE);
+          document.getElementById("board").classList.add("nope");
+          haptic("warning");
+          toast("Не сходится");
+          await sleep(SLIDE);
+          document.getElementById("board").classList.remove("nope");
+        } else if (res.reason === "over") {
+          finish();
+        }
+        busy = false;
+        return;
+      }
+
+      haptic("light");
+      var visual = before.slice();
+
+      // шаг 0 — сам размен
+      var s0 = res.steps[0];
+      visual[s0.swaps[0]] = before[s0.swaps[1]];
+      visual[s0.swaps[1]] = before[s0.swaps[0]];
+      slide(visual, [
+        { to: s0.swaps[0], dx: colOf(s0.swaps[1]) - colOf(s0.swaps[0]), dy: rowOf(s0.swaps[1]) - rowOf(s0.swaps[0]) },
+        { to: s0.swaps[1], dx: colOf(s0.swaps[0]) - colOf(s0.swaps[1]), dy: rowOf(s0.swaps[0]) - rowOf(s0.swaps[1]) }
+      ], SLIDE);
+      await sleep(SLIDE + 20);
+
+      // дальше — каскады: лопается, падает, приходит новое
+      for (var n = 1; n < res.steps.length; n++) {
+        var step = res.steps[n];
+
+        if (step.shuffled) {
+          toast("Ходов нет — перемешиваю");
+          await sleep(220);
+          paint(game.cells);
+          visual = game.cells.slice();
+          await sleep(220);
+          continue;
+        }
+
+        pop(step.cleared, POP);
+        if (step.chain > 1) { toast("Каскад ×" + step.chain); haptic("medium"); }
+        await sleep(POP);
+
+        var next = applyVisual(visual, step);
+        slide(next, slidesOf(step), SLIDE);
+        visual = next;
+        shown += step.gained;
+        bumpScore();
+        hud();
+        await sleep(SLIDE + 20);
+      }
+
+      if (visual.join(",") !== game.cells.join(",")) {
+        // показ разошёлся с правилами — значит, я неверно читаю шаги движка
+        console.warn("поле после анимации не совпало с движком");
+        paint(game.cells);
+      }
+      if (shown !== game.score) {
+        console.warn("очки на экране (" + shown + ") не совпали со счётом движка (" + game.score + ")");
+        shown = game.score;
+      }
+
+      hud();
+      busy = false;
+      if (game.over) finish();
+    }
+
+    function bumpScore() {
+      var el = document.getElementById("score");
+      el.classList.remove("bump");
+      void el.offsetWidth;                 // перезапуск анимации
+      el.classList.add("bump");
+    }
+
+    function setPicked(i) {
+      if (picked >= 0 && cells[picked]) cells[picked].classList.remove("sel");
+      picked = i;
+      if (i >= 0 && cells[i]) cells[i].classList.add("sel");
+    }
+
+    // --------------------------------------------------------------------- ввод
+    function neighbour(i, dx, dy) {
+      var c = colOf(i) + dx, r = rowOf(i) + dy;
+      if (c < 0 || r < 0 || c >= game.cols || r >= game.rows) return -1;
+      return r * game.cols + c;
+    }
+
+    function tapCell(i) {
+      if (busy || game.over) return;
+      if (picked < 0) { setPicked(i); haptic("light"); return; }
+      if (picked === i) { setPicked(-1); return; }
+      if (M.adjacent(game, picked, i)) {
+        var from = picked;
+        setPicked(-1);
+        attempt(from, i);
+      } else {
+        setPicked(i);                      // выбрал далёкую — считаем, что передумал
+      }
+    }
+
+    function bindInput() {
+      var board = document.getElementById("board");
+      var dragStart = null;        // точка, с которой начали свайп; null — свайпа нет
+
+      board.addEventListener("pointerdown", function (ev) {
+        var cell = ev.target.closest(".cell");
+        if (!cell) return;
+        dragFrom = Number(cell.dataset.i);
+        dragStart = { x: ev.clientX, y: ev.clientY };
+      });
+
+      board.addEventListener("pointermove", function (ev) {
+        if (dragFrom < 0 || !dragStart || busy || game.over) return;
+        var dx = ev.clientX - dragStart.x, dy = ev.clientY - dragStart.y;
+        if (Math.abs(dx) < 14 && Math.abs(dy) < 14) return;
+        var horiz = Math.abs(dx) > Math.abs(dy);
+        var to = neighbour(dragFrom, horiz ? (dx > 0 ? 1 : -1) : 0, horiz ? 0 : (dy > 0 ? 1 : -1));
+        var from = dragFrom;
+        dragFrom = -1; dragStart = null;
+        if (to >= 0) attempt(from, to);
+      });
+
+      board.addEventListener("pointerup", function (ev) {
+        var wasDragging = dragFrom >= 0;
+        dragFrom = -1; dragStart = null;
+        if (!wasDragging) return;
+        var cell = ev.target.closest(".cell");
+        if (cell) tapCell(Number(cell.dataset.i));
+      });
+
+      board.addEventListener("pointercancel", function () { dragFrom = -1; dragStart = null; });
+
+      // стрелки — чтобы поле было доступно не только пальцем
+      board.addEventListener("keydown", function (ev) {
+        var cell = ev.target.closest(".cell");
+        if (!cell) return;
+        var i = Number(cell.dataset.i);
+        var to = -1;
+        if (ev.key === "ArrowLeft") to = neighbour(i, -1, 0);
+        else if (ev.key === "ArrowRight") to = neighbour(i, 1, 0);
+        else if (ev.key === "ArrowUp") to = neighbour(i, 0, -1);
+        else if (ev.key === "ArrowDown") to = neighbour(i, 0, 1);
+        else if (ev.key === "Enter" || ev.key === " ") { tapCell(i); ev.preventDefault(); return; }
+        if (to >= 0) { ev.preventDefault(); cells[to].focus(); }
+      });
+    }
+
+    // --------------------------------------------------------------------- финал
+    // inside Telegram или нет: признак — непустой initData, его Telegram даёт только
+    // приложению, открытому по кнопке web_app. Вне Telegram sendData нет, и кнопку
+    // «Передать боту» честнее выключить, чем делать вид, что очки куда-то ушли.
+    function inTelegramApp() { return !!(TG && TG.initData && typeof TG.sendData === "function"); }
+
+    function finish() {
+      var goal = M.target(game);
+      var took = game.moves - game.movesLeft;
+      document.getElementById("endScore").textContent = game.score;
+      document.getElementById("endTitle").textContent = game.score >= goal ? "Цель взята" : "Партия окончена";
+
+      var note;
+      if (game.score > best) {
+        best = game.score; saveBest(best);
+        note = "новый рекорд · " + plural(took, ["ход", "хода", "ходов"]) + " сыграно";
+      } else {
+        note = "цель — " + goal + ", сыграно " + took + " " + plural(took, ["ход", "хода", "ходов"]);
+      }
+      document.getElementById("endNote").textContent = note;
+
+      var send = document.getElementById("send");
+      if (inTelegramApp()) {
+        send.disabled = false;
+        send.textContent = "Передать боту";
+        send.onclick = function () {
+          send.disabled = true;
+          TG.sendData(JSON.stringify({
+            g: "match3", tok: TOKEN, score: game.score, moves: took
+          }));
+          // sendData сам закрывает приложение — бот получит это сообщение как ответ
+        };
+      } else {
+        send.disabled = true;
+        send.textContent = "Открой игру через бота";
+        send.onclick = null;
+        document.getElementById("endNote").textContent =
+          "очки никуда не ушли: это окно не из Telegram. " + note;
+      }
+      document.getElementById("sheet").hidden = false;
+      hud();
+    }
+
+    // -------------------------------------------------------------- запуск партии
+    function newSeed() { return (Date.now() ^ Math.floor(Math.random() * 1e9)) >>> 0; }
+
+    function start(seed) {
+      game = M.newGame({ seed: seed, rows: 7, cols: 7, kinds: 5, moves: 25 });
+      shown = 0;
+      setPicked(-1);
+      busy = false;
+      document.getElementById("sheet").hidden = true;
+      buildBoard();
+      paint(game.cells);
+      hud();
+    }
+
+    // --------------------------------------------------------- режим самопроверки
+    function renderTests() {
+      var list = window.runMatch3Tests();
+      var bad = list.filter(function (t) { return !t.ok; }).length;
+      var box = document.createElement("div");
+      box.className = "tests";
+      var html = "<h1>Проверки правил: " + (list.length - bad) + " из " + list.length + "</h1><ul>";
+      list.forEach(function (t) {
+        html += "<li>" + (t.ok ? "✅" : "<span class='bad'>❌</span>") + " " +
+                t.name + (t.ok ? "" : "<div class='note'>" + t.note + "</div>") + "</li>";
+      });
+      html += "</ul><p class='sum'>" + (bad ? "Есть красные — игру чинить, а не показывать." : "Все зелёные.") + "</p>";
+      box.innerHTML = html;
+      document.body.innerHTML = "";
+      document.body.appendChild(box);
+      document.title = "Три в ряд — самопроверка";
+    }
+
+    // ---------------------------------------------------------------------- старт
+    if (SELFTEST) {
+      renderTests();
+    } else {
+      if (TG) { try { TG.ready(); TG.expand(); } catch (e) { /* старые клиенты */ } }
+      var fromLink = Number(params.get("seed"));
+      start(fromLink > 0 ? fromLink : newSeed());
+      bindInput();
+      document.getElementById("again").onclick = function () {
+        if (busy) return;
+        start(newSeed());
+      };
+      document.getElementById("close").onclick = function () {
+        if (TG && TG.close) TG.close();
+        else document.getElementById("sheet").hidden = true;
+      };
+      hud();
+    }
+  </script>
+</body>
+</html>
