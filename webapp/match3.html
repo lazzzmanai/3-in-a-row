@@ -58,8 +58,9 @@
       --mint: #34D3A0;              /* мята      */
       --lilac: #A96BE8;             /* сирень    */
 
-      --cell: min(12.4vw, 50px);
+      --cell: min(12.4vw, 50px);           /* поле 7×7: 7 клеток + 6 промежутков влезает в 320px */
       --gap: 3px;
+      --span: calc(var(--cell) * 7 + var(--gap) * 6);
       --ease-out: cubic-bezier(.2, .8, .3, 1);
     }
 
@@ -97,7 +98,7 @@
 
     /* ------------------------------------------------------------- шапка поля */
     .hud {
-      width: calc(var(--cell) * 7 + var(--gap) * 6);
+      width: var(--span);
       display: flex;
       align-items: flex-end;
       justify-content: space-between;
@@ -129,7 +130,7 @@
 
     /* цель — одна полоса: видно, сколько осталось, без объяснений */
     .goal {
-      width: calc(var(--cell) * 7 + var(--gap) * 6);
+      width: var(--span);
       height: 7px;
       border-radius: 99px;
       background: var(--panel);
@@ -147,6 +148,7 @@
 
     /* ------------------------------------------------------------------ поле */
     .board {
+      position: relative;                     /* слои эффектов рисуются поверх поля */
       display: grid;
       grid-template-columns: repeat(7, var(--cell));
       grid-auto-rows: var(--cell);
@@ -196,15 +198,71 @@
     .k4 { background: var(--lilac);     border-radius: 50% 50% 12% 12%; }            /* купол    */
 
     /* спецфигуры: цвета нет вообще — плашка тёмная, значок свой */
-    .bomb, .star {
+    .bomb, .star, .crown {
       background: #3A2E29;
       border-color: #1F1815;
       box-shadow: 0 2px 6px var(--shadow), 0 0 14px rgba(255, 196, 77, .55);
       border-radius: 30%;
     }
-    .star { box-shadow: 0 2px 6px var(--shadow), 0 0 14px rgba(255, 213, 128, .8); }
-    .bomb.pulse, .star.pulse { animation: pulse .5s var(--ease-out); }
+    .star, .crown { box-shadow: 0 2px 6px var(--shadow), 0 0 14px rgba(255, 213, 128, .8); }
+    .bomb.pulse, .star.pulse, .crown.pulse { animation: pulse .5s var(--ease-out); }
     @keyframes pulse { 0% { transform: scale(.7); } 60% { transform: scale(1.18); } 100% { transform: scale(1); } }
+
+    /* ───────── эффекты: взрыв, крест короны, баннер бонуса ─────────
+       Все три — ответ на действие игрока, а не фоновая анимация: без них игрок не
+       понимает, что именно сработало (его замечание 2026-10-13: «визуально скучно»). */
+    .fx { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+
+    .ring {
+      position: absolute; border-radius: 50%;
+      border: 3px solid rgba(255, 236, 179, .95);
+      background: radial-gradient(circle, rgba(255, 213, 128, .55), rgba(255, 122, 141, 0) 70%);
+      transform: translate(-50%, -50%) scale(.2);
+      animation: ring .42s ease-out forwards;
+    }
+    @keyframes ring {
+      35% { opacity: 1; }
+      to  { transform: translate(-50%, -50%) scale(1.5); opacity: 0; }
+    }
+
+    .beam {
+      position: absolute; background: linear-gradient(90deg, rgba(255,255,255,0) 0%,
+                rgba(255, 231, 168, .9) 50%, rgba(255,255,255,0) 100%);
+      animation: beam .45s ease-out forwards;
+    }
+    .beam.v { background: linear-gradient(180deg, rgba(255,255,255,0) 0%,
+                rgba(255, 231, 168, .9) 50%, rgba(255,255,255,0) 100%); }
+    @keyframes beam { from { opacity: 0; } 30% { opacity: .95; } to { opacity: 0; } }
+
+    .ring.thin { border-width: 2px; border-color: rgba(255, 244, 214, .95); }
+    .flash { position: absolute; inset: 0; background: #FFF3D6; opacity: 0; animation: flash .35s ease-out; }
+    @keyframes flash { 0% { opacity: 0; } 20% { opacity: .5; } 100% { opacity: 0; } }
+
+    .board.shake { animation: shake .34s ease-in-out; }
+    @keyframes shake {
+      0%,100% { transform: translate(0, 0); }
+      20% { transform: translate(-4px, 2px); }
+      40% { transform: translate(5px, -2px); }
+      60% { transform: translate(-3px, 1px); }
+      80% { transform: translate(3px, -1px); }
+    }
+
+    .banner {
+      position: fixed; left: 50%; top: 38%;
+      transform: translate(-50%, -50%) scale(.6);
+      font-size: 30px; font-weight: 800; letter-spacing: -.02em;
+      color: var(--on-color); background: var(--dandelion);
+      border: 2px solid rgba(43, 33, 28, .85); border-radius: 99px;
+      padding: 10px 22px; opacity: 0; pointer-events: none;
+      box-shadow: 0 10px 30px var(--shadow);
+      animation: banner 1.15s var(--ease-out);
+    }
+    @keyframes banner {
+      0%   { opacity: 0; transform: translate(-50%, -50%) scale(.6); }
+      25%  { opacity: 1; transform: translate(-50%, -50%) scale(1.08); }
+      70%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+      100% { opacity: 0; transform: translate(-50%, -62%) scale(1); }
+    }
 
     .cell.sel .gem { transform: scale(1.1); border-color: var(--ink); }
 
@@ -227,7 +285,7 @@
 
     /* --------------------------------------------------------------- подпись */
     .hint {
-      width: calc(var(--cell) * 7 + var(--gap) * 6);
+      width: var(--span);
       font-size: 12.5px;
       color: var(--ink-soft);
       text-align: center;
@@ -310,7 +368,8 @@
     .tests .sum { margin: 12px 0 0; font-weight: 700; }
 
     @media (prefers-reduced-motion: reduce) {
-      .gem.slide, .gem.pop, .gem.pulse, .score-n.bump, .board.nope { animation-duration: 1ms; }
+      .gem.slide, .gem.pop, .gem.pulse, .score-n.bump, .board.nope,
+      .ring, .beam, .flash, .board.shake, .banner { animation-duration: 1ms; }
       .goal i { transition-duration: 1ms; }
     }
   </style>
@@ -323,7 +382,7 @@
     </div>
     <div class="side">
       <div><b id="moves">25</b> <span id="movesWord">ходов</span> <span id="gift" hidden></span></div>
-      <div>цель <b id="goaln">6000</b></div>
+      <div>цель <b id="goaln">5500</b></div>
       <div>рекорд <b id="best">—</b></div>
     </div>
   </div>
@@ -360,9 +419,12 @@
         <div><b>4 в ряд</b><span>💣 бомба: передвинь её — взорвёт квадрат 3×3</span></div>
         <div><b>5 в ряд</b><span>＋5 дополнительных ходов</span></div>
         <div><b>Т или Г</b><span>⭐ звезда: передвинь на фигуру — исчезнут все такого вида</span></div>
-        <div><b>⭐ + 💣</b><span>три фигуры станут бомбами</span></div>
+        <div><b>2 линии</b><span>💫 корона: соберёшь две линии одним ходом (или крест 5+3 в каскаде) — передвинь, и она сметёт строку и столбец целиком</span></div>
+        <div><b>💣 + 💣</b><span>один взрыв 5×5 там, куда передвинули</span></div>
+        <div><b>⭐ + 💣</b><span>рождаются три бомбы и сразу взрываются</span></div>
         <div><b>⭐ + ⭐</b><span>стирается всё поле</span></div>
-        <div><b>взрыв</b><span>задел другую спецфигуру — взрывается и она</span></div>
+        <div><b>взрыв</b><span>задел бомбу — она взрывается тоже; задел звезду — она бьёт по самому частому виду и исчезает</span></div>
+        <div><b>каскад</b><span>линии, сложившиеся сами, тоже собирают спецфигуры</span></div>
       </div>
       <div class="btns">
         <button class="act secondary" id="rules-close">Понятно</button>
@@ -387,9 +449,11 @@
     var M = window.Match3;
 
     var REDUCED = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    var SLIDE = REDUCED ? 10 : 190;
-    var POP = REDUCED ? 10 : 200;
-    var BOMB = M.SPECIAL_BOMB, STAR = M.SPECIAL_STAR;
+    // Задержки держим короткими сознательно: на смартфоне игрок ждёт не анимацию, а
+    // возможность сделать следующий ход (его замечание про «большую задержку свайпа»).
+    var SLIDE = REDUCED ? 10 : 130;
+    var POP = REDUCED ? 10 : 150;
+    var BOMB = M.SPECIAL_BOMB, STAR = M.SPECIAL_STAR, CROWN = M.SPECIAL_CROWN;
     var SHAPE = ["круг", "квадрат", "таблетка", "листик", "купол"];
     var COLOR = ["клубничный", "небесный", "одуванчик", "мятный", "сиреневый"];
 
@@ -417,7 +481,101 @@
     function name(kind) {
       if (kind === BOMB) return "💣 бомба";
       if (kind === STAR) return "⭐ звезда";
+      if (kind === CROWN) return "💫 корона";
       return COLOR[kind] + " " + SHAPE[kind];
+    }
+
+    // ───────── эффекты поля ─────────
+    /** Слой, в котором рисуются вспышки; создаётся один раз, поверх сетки клеток. */
+    function fxLayer() {
+      var board = document.getElementById("board");
+      var fx = board.querySelector(".fx");
+      if (!fx) {
+        fx = document.createElement("div");
+        fx.className = "fx";
+        board.appendChild(fx);
+      }
+      fx.innerHTML = "";
+      return fx;
+    }
+
+    function cellBox(i) {
+      var step = "calc(var(--cell) + var(--gap))";
+      return {
+        x: "calc(" + (i % game.cols) + " * " + step + " + var(--cell) / 2 + 9px)",
+        y: "calc(" + Math.floor(i / game.cols) + " * " + step + " + var(--cell) / 2 + 9px)",
+      };
+    }
+
+    /**
+     * Искра для звезды и короны: тонкое кольцо БЕЗ вспышки и тряски. Взрываться должна
+     * только бомба (замечание Andr'а) — иначе все спецэффекты выглядят одинаково и
+     * «звезда сметает весь вид» не читается как особое событие.
+     */
+    function spark(centers) {
+      var fx = fxLayer();
+      centers.forEach(function (i) {
+        var ring = document.createElement("span");
+        ring.className = "ring thin";
+        ring.style.width = "calc(var(--cell) * 2.4)";
+        ring.style.height = "calc(var(--cell) * 2.4)";
+        ring.style.left = cellBox(i).x;
+        ring.style.top = cellBox(i).y;
+        fx.appendChild(ring);
+      });
+    }
+
+    /** Ударная волна — ТОЛЬКО у бомбы: кольцо, вспышка, тряска поля. */
+    function boom(centers, clearedCount) {
+      var fx = fxLayer();
+      var radius = clearedCount >= 25 ? 3 : clearedCount >= 12 ? 2 : 1;
+      var size = 2 * radius + 1;
+      centers.forEach(function (i) {
+        var ring = document.createElement("span");
+        ring.className = "ring";
+        ring.style.width = "calc(var(--cell) * " + size + ")";
+        ring.style.height = "calc(var(--cell) * " + size + ")";
+        ring.style.left = cellBox(i).x;
+        ring.style.top = cellBox(i).y;
+        fx.appendChild(ring);
+      });
+      var flash = document.createElement("span");
+      flash.className = "flash";
+      fx.appendChild(flash);
+      var board = document.getElementById("board");
+      board.classList.add("shake");
+      window.setTimeout(function () { board.classList.remove("shake"); }, 340);
+    }
+
+    /** Крест короны: две светящиеся полосы по строке и столбцу клетки назначения. */
+    function cross(i) {
+      var fx = fxLayer();
+      var h = document.createElement("span"), v = document.createElement("span");
+      h.className = "beam";
+      v.className = "beam v";
+      h.style.left = "9px";
+      h.style.top = cellBox(i).y;
+      h.style.width = "var(--span)";
+      h.style.height = "var(--cell)";
+      v.style.top = "9px";
+      v.style.left = cellBox(i).x;
+      v.style.height = "var(--span)";
+      v.style.width = "var(--cell)";
+      v.style.transform = "translateX(-50%)";
+      h.style.transform = "translateY(-50%)";
+      fx.appendChild(h);
+      fx.appendChild(v);
+    }
+
+    /** Баннер «+5 ходов»: крупно, по центру, чтобы игрок не гадал, отчего ходов стало больше. */
+    function banner(text) {
+      var old = document.querySelector(".banner");
+      if (old) old.remove();
+      var b = document.createElement("div");
+      b.className = "banner";
+      b.textContent = text;
+      document.body.appendChild(b);
+      window.setTimeout(function () { b.remove(); }, 1200);
     }
 
     // ------------------------------------------------------------------------ разметка
@@ -443,8 +601,10 @@
       for (var i = 0; i < cells.length; i++) {
         var kind = list[i];
         var gem = cells[i].firstChild;
-        gem.className = "gem " + (kind === BOMB ? "bomb" : kind === STAR ? "star" : "k" + kind);
-        gem.textContent = kind === BOMB ? "💣" : kind === STAR ? "⭐" : "";
+        var glyph = kind === BOMB ? "💣" : kind === STAR ? "⭐" : kind === CROWN ? "💫" : "";
+        gem.className = "gem " + (kind === BOMB ? "bomb" : kind === STAR ? "star"
+                                : kind === CROWN ? "crown" : "k" + kind);
+        gem.textContent = glyph;
         cells[i].setAttribute("aria-label",
           name(kind) + ", строка " + (Math.floor(i / game.cols) + 1) + ", столбец " + (i % game.cols + 1));
       }
@@ -528,7 +688,9 @@
       var next = prev.slice();
       (step.moved || []).forEach(function (m) { next[m.to] = prev[m.from]; });
       (step.born || []).forEach(function (b) { next[b.to] = b.kind; });
-      (step.spawn || []).forEach(function (s) { next[s.at] = s.type === "star" ? STAR : BOMB; });
+      (step.spawn || []).forEach(function (s) {
+        next[s.at] = s.type === "star" ? STAR : s.type === "crown" ? CROWN : BOMB;
+      });
       (step.spawned || []).forEach(function (s) { next[s.at] = BOMB; });
       return next;
     }
@@ -546,8 +708,23 @@
 
     function sleep(ms) { return new Promise(function (r) { window.setTimeout(r, ms); }); }
 
+    var pending = null;        // ход, сделанный, пока играла анимация: касание терять нельзя
+
+    /** Следом за освободившимся полем сразу делаем тот ход, который игрок уже намечтал. */
+    function drain() {
+      busy = false;
+      if (pending) {
+        var nx = pending;
+        pending = null;
+        attempt(nx[0], nx[1]);
+        return;
+      }
+      if (game.over) finish();
+    }
+
     async function attempt(a, b) {
-      if (busy || !game || game.over) return;
+      if (!game || game.over) return;
+      if (busy) { pending = [a, b]; return; }   // «свайпнулся вперёд» — нормальный темп на телефоне
       busy = true;
       setPicked(-1);
 
@@ -572,7 +749,7 @@
         } else if (res.reason === "over") {
           finish();
         }
-        busy = false;
+        drain();
         return;
       }
 
@@ -587,7 +764,7 @@
         { to: s0.swaps[0], dx: colOf(s0.swaps[1]) - colOf(s0.swaps[0]), dy: rowOf(s0.swaps[1]) - rowOf(s0.swaps[0]) },
         { to: s0.swaps[1], dx: colOf(s0.swaps[0]) - colOf(s0.swaps[1]), dy: rowOf(s0.swaps[0]) - rowOf(s0.swaps[1]) }
       ], SLIDE);
-      await sleep(SLIDE + 20);
+      await sleep(SLIDE);
 
       // дальше — спецэффект или каскады: лопается, падает, приходит новое
       for (var n = 1; n < res.steps.length; n++) {
@@ -603,32 +780,42 @@
         }
 
         if (step.special) {
-          if (step.special.bomb) { haptic("heavy"); toast(step.special.bomb > 1 ? "💥 Бум! ×" + step.special.bomb : "💥 Бум!"); }
-          else if (step.special.star) { haptic("heavy"); toast("⭐ Звезда сметает!"); }
+          var s = step.special;
+          var blast = (step.centers || []).concat((step.spawned || []).map(function (x) { return x.at; }));
+          if (s.bomb) {                                    // взрыв есть взрыв: волна, вспышка, тряска
+            haptic("heavy");
+            boom(blast, step.cleared.length);
+            toast(s.bomb > 1 ? "💥 Бум! ×" + s.bomb : "💥 Бум!");
+          }
+          if (s.crown) { haptic("heavy"); cross(step.centers[0]); spark(blast); toast("💫 Крест!"); }
+          else if (s.star && !s.bomb) {                   // звезда НЕ взрывается: у неё своё свечение
+            haptic("medium");
+            spark(step.centers || []);
+            toast("⭐ Звезда сметает " + (s.swept === undefined ? "вид" : "весь цвет"));
+          }
         }
 
         pop(step.cleared, POP);
-        if (step.chain > 1) { toast("Каскад ×" + step.chain); haptic("medium"); }
+        if (step.chain > 1 && !step.special) { toast("Каскад ×" + step.chain); haptic("medium"); }
         await sleep(POP);
 
         var next = applyVisual(visual, step);
         slide(next, slidesOf(step), SLIDE);
         visual = next;
-
         var bornSpecial = (step.spawn || []).concat(step.spawned || []);
         if (bornSpecial.length) {
           pulse(bornSpecial.map(function (s) { return s.at; }));
-          if (step.spawn && step.spawn.length) {
-            toast(step.spawn[0].type === "star" ? "⭐ Звезда собрана — двинь её на фигуру"
-                                                : "💣 Бомба собрана — двинь её");
-          }
+          var kinds = (step.spawn || []).map(function (s) { return s.type; });
+          if (kinds.indexOf("crown") >= 0) toast("💫 Корона! Двинь её на клетку — крест сметёт строку и столбец", 1400);
+          else if (kinds.indexOf("star") >= 0) toast("⭐ Звезда собрана — двинь её на фигуру");
+          else if (kinds.indexOf("bomb") >= 0) toast("💣 Бомба собрана — двинь её");
         }
-        if (step.bonus) { toast("＋" + step.bonus + " ходов 🎁", 1100); haptic("success"); }
+        if (step.bonus) { banner("＋" + step.bonus + " ходов"); haptic("success"); }
 
         shown += step.gained;
         bumpScore();
         hud();
-        await sleep(SLIDE + 20);
+        await sleep(SLIDE);
       }
 
       if (visual.join(",") !== game.cells.join(",")) {
@@ -642,8 +829,7 @@
       }
 
       hud();
-      busy = false;
-      if (game.over) finish();
+      drain();
     }
 
     function bumpScore() {
@@ -667,7 +853,7 @@
     }
 
     function tapCell(i) {
-      if (busy || game.over) return;
+      if (!game || game.over) return;
       if (picked < 0) { setPicked(i); haptic("light"); return; }
       if (picked === i) { setPicked(-1); return; }
       if (M.adjacent(game, picked, i)) {
@@ -691,9 +877,11 @@
       });
 
       board.addEventListener("pointermove", function (ev) {
-        if (dragFrom < 0 || !dragStart || busy || game.over) return;
+        if (dragFrom < 0 || !dragStart || game.over) return;
         var dx = ev.clientX - dragStart.x, dy = ev.clientY - dragStart.y;
-        if (Math.abs(dx) < 14 && Math.abs(dy) < 14) return;
+        // 9px вместо 14: палец на телефоне делает короткий уверенный жест, и раньше
+        // свайп «не засчитывался» — отсюда ощущение задержки (замечание Andr'а)
+        if (Math.abs(dx) < 9 && Math.abs(dy) < 9) return;
         var horiz = Math.abs(dx) > Math.abs(dy);
         var to = neighbour(dragFrom, horiz ? (dx > 0 ? 1 : -1) : 0, horiz ? 0 : (dy > 0 ? 1 : -1));
         var from = dragFrom;
