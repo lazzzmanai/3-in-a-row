@@ -43,11 +43,17 @@
     :root {
       color-scheme: light dark;
       /* крем + какао-контур — та же речь, что у арта питомца */
+      /* ВАЖНО: цвета, которые ложатся на ПОВЕРХНОСТЬ из Telegram, обязаны приходить из
+         переменных Telegram, а не из prefers-color-scheme. WebView внутри Telegram может
+         сообщить светлый режим при тёмной теме приложения — и тогда «мягкий» текст
+         (полупрозрачный тёмный) на тёмной карточке давал контраст 1,99:1 вместо 4,5:
+         в финале партии ничего не читалось. Медиа-запрос ниже — только запасной вариант
+         для открытия файла в обычном браузере, вне Telegram. */
       --cream: var(--tg-theme-bg-color, #FFF7F0);
-      --panel: #F6E4D3;
-      --line: #E9CDB4;
+      --panel: var(--tg-theme-secondary-bg-color, #F6E4D3);
+      --line: var(--tg-theme-section-separator-color, #E9CDB4);
       --ink: var(--tg-theme-text-color, #43342D);
-      --ink-soft: rgba(67, 52, 45, .62);
+      --ink-soft: var(--tg-theme-hint-color, rgba(67, 52, 45, .78));   /* .62 давало 3,7:1 */
       --shadow: rgba(67, 52, 45, .16);
       --on-color: #2A211C;          /* текст ВСЕГДА на цветной плашке — тёмный и фиксированный */
 
@@ -64,13 +70,14 @@
       --ease-out: cubic-bezier(.2, .8, .3, 1);
     }
 
+    /* Вне Telegram (двойной щелчок по файлу) переменных нет — решаем по системе. */
     @media (prefers-color-scheme: dark) {
       :root {
         --cream: #221F1D;
         --panel: #2F2A26;
         --line: #443C36;
         --ink: #F3E9E1;
-        --ink-soft: rgba(243, 233, 225, .66);
+        --ink-soft: rgba(243, 233, 225, .75);
         --shadow: rgba(0, 0, 0, .55);
       }
     }
@@ -149,6 +156,7 @@
     /* ------------------------------------------------------------------ поле */
     .board {
       position: relative;                     /* слои эффектов рисуются поверх поля */
+      touch-action: none;                     /* свайп принадлежит игре, а не прокрутке окна */
       display: grid;
       grid-template-columns: repeat(7, var(--cell));
       grid-auto-rows: var(--cell);
@@ -160,6 +168,7 @@
     }
 
     .cell {
+      -webkit-touch-callout: none;            /* долгое нажатие не вызывает меню iOS */
       position: relative;
       border: 0;
       padding: 0;
@@ -205,7 +214,7 @@
       border-radius: 30%;
     }
     .star, .crown { box-shadow: 0 2px 6px var(--shadow), 0 0 14px rgba(255, 213, 128, .8); }
-    .bomb.pulse, .star.pulse, .crown.pulse { animation: pulse .5s var(--ease-out); }
+    .bomb.pulse, .star.pulse, .crown.pulse { animation: pulse .7s var(--ease-out); }
     @keyframes pulse { 0% { transform: scale(.7); } 60% { transform: scale(1.18); } 100% { transform: scale(1); } }
 
     /* ───────── эффекты: взрыв, крест короны, баннер бонуса ─────────
@@ -218,7 +227,7 @@
       border: 3px solid rgba(255, 236, 179, .95);
       background: radial-gradient(circle, rgba(255, 213, 128, .55), rgba(255, 122, 141, 0) 70%);
       transform: translate(-50%, -50%) scale(.2);
-      animation: ring .42s ease-out forwards;
+      animation: ring .6s ease-out forwards;
     }
     @keyframes ring {
       35% { opacity: 1; }
@@ -228,14 +237,14 @@
     .beam {
       position: absolute; background: linear-gradient(90deg, rgba(255,255,255,0) 0%,
                 rgba(255, 231, 168, .9) 50%, rgba(255,255,255,0) 100%);
-      animation: beam .45s ease-out forwards;
+      animation: beam .65s ease-out forwards;
     }
     .beam.v { background: linear-gradient(180deg, rgba(255,255,255,0) 0%,
                 rgba(255, 231, 168, .9) 50%, rgba(255,255,255,0) 100%); }
     @keyframes beam { from { opacity: 0; } 30% { opacity: .95; } to { opacity: 0; } }
 
     .ring.thin { border-width: 2px; border-color: rgba(255, 244, 214, .95); }
-    .flash { position: absolute; inset: 0; background: #FFF3D6; opacity: 0; animation: flash .35s ease-out; }
+    .flash { position: absolute; inset: 0; background: #FFF3D6; opacity: 0; animation: flash .5s ease-out; }
     @keyframes flash { 0% { opacity: 0; } 20% { opacity: .5; } 100% { opacity: 0; } }
 
     .board.shake { animation: shake .34s ease-in-out; }
@@ -255,7 +264,7 @@
       border: 2px solid rgba(43, 33, 28, .85); border-radius: 99px;
       padding: 10px 22px; opacity: 0; pointer-events: none;
       box-shadow: 0 10px 30px var(--shadow);
-      animation: banner 1.15s var(--ease-out);
+      animation: banner 1.6s var(--ease-out);
     }
     @keyframes banner {
       0%   { opacity: 0; transform: translate(-50%, -50%) scale(.6); }
@@ -453,9 +462,9 @@
     // произошло (замечание Andr'а 15 октября), а «задержки свайпа» теперь нет: ход,
     // сделанный во время анимации, встаёт в очередь и играется сразу после. Поэтому
     // темп можно держать читаемый, а не гонять вразнобой.
-    var SLIDE = REDUCED ? 10 : 170;      // размен и падение
-    var POP = REDUCED ? 10 : 200;        // лопание линии
-    var BEAT = REDUCED ? 0 : 60;         // пауза между шагами каскада, чтобы глаз успел
+    var SLIDE = REDUCED ? 10 : 210;      // размен и падение
+    var POP = REDUCED ? 10 : 250;        // лопание линии
+    var BEAT = REDUCED ? 0 : 95;         // пауза между шагами каскада, чтобы глаз успел
     var BOMB = M.SPECIAL_BOMB, STAR = M.SPECIAL_STAR, CROWN = M.SPECIAL_CROWN;
     var SHAPE = ["круг", "квадрат", "таблетка", "листик", "купол"];
     var COLOR = ["клубничный", "небесный", "одуванчик", "мятный", "сиреневый"];
@@ -578,7 +587,7 @@
       b.className = "banner";
       b.textContent = text;
       document.body.appendChild(b);
-      window.setTimeout(function () { b.remove(); }, 1200);
+      window.setTimeout(function () { b.remove(); }, 1700);
     }
 
     // ------------------------------------------------------------------------ разметка
@@ -643,7 +652,7 @@
         var gem = cells[i] && cells[i].firstChild;
         if (!gem) return;
         gem.classList.add("pulse");
-        window.setTimeout(function () { gem.classList.remove("pulse"); }, 520);
+        window.setTimeout(function () { gem.classList.remove("pulse"); }, 720);
       });
     }
 
@@ -653,7 +662,7 @@
       t.textContent = text;
       t.classList.add("on");
       window.clearTimeout(toastTimer);
-      toastTimer = window.setTimeout(function () { t.classList.remove("on"); }, ms || 900);
+      toastTimer = window.setTimeout(function () { t.classList.remove("on"); }, ms || 1300);
     }
 
     function haptic(style) {
@@ -875,35 +884,52 @@
       var board = document.getElementById("board");
       var dragStart = null;        // точка, с которой начали свайп; null — свайпа нет
 
+      // Быстрый flick на телефоне иногда не успевает дать pointermove: браузер шлёт
+      // pointerdown и сразу pointerup в соседней клетке. Старый код видел только «тап
+      // по чужой клетке» — отсюда «свайп иногда не срабатывает» (замечание Andr'а 16.10).
+      // Поэтому вектор жеста считаем и по движению, и по отпусканию пальца.
+      var SWIPE_MIN = 9;          // px: короткий уверенный жест, 14 было много
+
+      function swipeTarget(ev) {
+        if (dragFrom < 0 || !dragStart) return null;
+        var dx = ev.clientX - dragStart.x, dy = ev.clientY - dragStart.y;
+        if (Math.abs(dx) < SWIPE_MIN && Math.abs(dy) < SWIPE_MIN) return null;
+        var horiz = Math.abs(dx) > Math.abs(dy);
+        var to = neighbour(dragFrom, horiz ? (dx > 0 ? 1 : -1) : 0, horiz ? 0 : (dy > 0 ? 1 : -1));
+        return to >= 0 ? [dragFrom, to] : null;
+      }
+
       board.addEventListener("pointerdown", function (ev) {
+        if (ev.isPrimary === false) return;              // мультитач: ведём один жест
         var cell = ev.target.closest(".cell");
         if (!cell) return;
         dragFrom = Number(cell.dataset.i);
         dragStart = { x: ev.clientX, y: ev.clientY };
+        // захват указателя: без него на части Android-WebView события уходят другому элементу
+        try { board.setPointerCapture(ev.pointerId); } catch (e) { /* старый клиент — и ладно */ }
       });
 
       board.addEventListener("pointermove", function (ev) {
-        if (dragFrom < 0 || !dragStart || game.over) return;
-        var dx = ev.clientX - dragStart.x, dy = ev.clientY - dragStart.y;
-        // 9px вместо 14: палец на телефоне делает короткий уверенный жест, и раньше
-        // свайп «не засчитывался» — отсюда ощущение задержки (замечание Andr'а)
-        if (Math.abs(dx) < 9 && Math.abs(dy) < 9) return;
-        var horiz = Math.abs(dx) > Math.abs(dy);
-        var to = neighbour(dragFrom, horiz ? (dx > 0 ? 1 : -1) : 0, horiz ? 0 : (dy > 0 ? 1 : -1));
-        var from = dragFrom;
+        if (game.over) return;
+        var mv = swipeTarget(ev);
+        if (!mv) return;
         dragFrom = -1; dragStart = null;
-        if (to >= 0) attempt(from, to);
+        attempt(mv[0], mv[1]);
       });
 
       board.addEventListener("pointerup", function (ev) {
         var wasDragging = dragFrom >= 0;
+        var mv = swipeTarget(ev);                          // flick без pointermove
+        var origin = dragFrom;
         dragFrom = -1; dragStart = null;
         if (!wasDragging) return;
-        var cell = ev.target.closest(".cell");
-        if (cell) tapCell(Number(cell.dataset.i));
+        if (mv) { attempt(mv[0], mv[1]); return; }
+        // обычный тап: клетка, С КОТОРОЙ начали, а не та, куда палец успел съехать
+        if (origin >= 0) tapCell(origin);
       });
 
       board.addEventListener("pointercancel", function () { dragFrom = -1; dragStart = null; });
+      board.addEventListener("contextmenu", function (ev) { ev.preventDefault(); });
 
       // стрелки — чтобы поле было доступно не только пальцем
       board.addEventListener("keydown", function (ev) {
