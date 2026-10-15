@@ -449,10 +449,13 @@
     var M = window.Match3;
 
     var REDUCED = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    // Задержки держим короткими сознательно: на смартфоне игрок ждёт не анимацию, а
-    // возможность сделать следующий ход (его замечание про «большую задержку свайпа»).
-    var SLIDE = REDUCED ? 10 : 130;
-    var POP = REDUCED ? 10 : 150;
+    // Темп: 130/150 мс оказались слишком быстрыми — игрок не успевает понять, что
+    // произошло (замечание Andr'а 15 октября), а «задержки свайпа» теперь нет: ход,
+    // сделанный во время анимации, встаёт в очередь и играется сразу после. Поэтому
+    // темп можно держать читаемый, а не гонять вразнобой.
+    var SLIDE = REDUCED ? 10 : 170;      // размен и падение
+    var POP = REDUCED ? 10 : 200;        // лопание линии
+    var BEAT = REDUCED ? 0 : 60;         // пауза между шагами каскада, чтобы глаз успел
     var BOMB = M.SPECIAL_BOMB, STAR = M.SPECIAL_STAR, CROWN = M.SPECIAL_CROWN;
     var SHAPE = ["круг", "квадрат", "таблетка", "листик", "купол"];
     var COLOR = ["клубничный", "небесный", "одуванчик", "мятный", "сиреневый"];
@@ -691,7 +694,10 @@
       (step.spawn || []).forEach(function (s) {
         next[s.at] = s.type === "star" ? STAR : s.type === "crown" ? CROWN : BOMB;
       });
-      (step.spawned || []).forEach(function (s) { next[s.at] = BOMB; });
+      // spawned с пометкой detonated в поле НЕ попадают: эти бомбы израсходовались
+      // в этом же шаге (экран рисует по ним только вспышку). Иначе остаются «бомбы-призраки»,
+      // которые не взрываются по тапу.
+      (step.spawned || []).forEach(function (s) { if (!s.detonated) next[s.at] = BOMB; });
       return next;
     }
 
@@ -815,7 +821,7 @@
         shown += step.gained;
         bumpScore();
         hud();
-        await sleep(SLIDE);
+        await sleep(SLIDE + BEAT);
       }
 
       if (visual.join(",") !== game.cells.join(",")) {

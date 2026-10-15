@@ -763,6 +763,133 @@
       return checked ? "" : "ни одной спецфигуры за 300 партий — тест пустой";
     });
 
+    check("экран и движок видят поле одинаково (реконструкция по шагам)", function () {
+      // Регресс на настоящую ошибку 15 октября: «звезда + бомба» записывала три новые
+      // бомбы в шаг, экран восстанавливал их как стоящие на поле — и показывал бомбы,
+      // которых в правилах уже нет (взрыв состоялся в том же шаге). Проверяем так же,
+      // как это делает match3.html: собираем поле из шагов и сравниваем с движком.
+      function reconstruct(prev, step) {
+        var next = prev.slice();
+        (step.moved || []).forEach(function (m) { next[m.to] = prev[m.from]; });
+        (step.born || []).forEach(function (b) { next[b.to] = b.kind; });
+        (step.spawn || []).forEach(function (x) {
+          next[x.at] = x.type === "star" ? M.SPECIAL_STAR : x.type === "crown" ? M.SPECIAL_CROWN : M.SPECIAL_BOMB;
+        });
+        (step.spawned || []).forEach(function (x) { if (!x.detonated) next[x.at] = M.SPECIAL_BOMB; });
+        return next;
+      }
+      var bad = "", checked = 0, detonations = 0;
+      // Ход выбираем КАК ИГРОК: если на поле есть спецфигура — тащим её (иначе жадный
+      // перебор «линий» никогда не свайпнет звезду на бомбу, и проверка ничего не покроет —
+      // именно так и вышло на первом прогоне).
+      function pickMove(g) {
+        for (var r = 0; r < g.rows; r++) {
+          for (var c = 0; c < g.cols; c++) {
+            var i = r * g.cols + c;
+            if (!M.isSpecial(g.cells[i])) continue;
+            var around = [[i + 1, c + 1 < g.cols], [i + g.cols, r + 1 < g.rows],
+                          [i - 1, c > 0], [i - g.cols, r > 0]];
+            for (var k = 0; k < around.length; k++) {
+              if (around[k][1] && around[k][0] >= 0) return [i, around[k][0]];
+            }
+          }
+        }
+        return firstValidMove(g);
+      }
+      for (var seed = 1; seed <= 200 && !bad; seed++) {
+        var g = M.newGame({ seed: seed });
+        for (var m = 0; m < 25; m++) {
+          var mv = pickMove(g);
+          if (!mv) break;
+          var before = g.cells.slice();
+          var res = M.play(g, mv[0], mv[1]);
+          if (!res.ok) break;
+          var visual = before.slice();
+          if (res.steps[0] && res.steps[0].swaps) {
+            var p0 = res.steps[0].swaps;
+            visual[p0[0]] = before[p0[1]]; visual[p0[1]] = before[p0[0]];
+          }
+          for (var n = 1; n < res.steps.length; n++) {
+            var step = res.steps[n];
+            if (step.shuffled) { visual = g.cells.slice(); continue; }
+            detonations += (step.spawned || []).filter(function (x) { return x.detonated; }).length;
+            // спецфигура не может родиться в клетке, которую этот же шаг стирает.
+            // ВАЖНО: step.at у движка — клетка ПОСЛЕ падения, а cleared — ПОСЛЕ очистка,
+            // но ДО падения: сверяем через moved (иначе проверка сама врёт, как я и
+            // поймал на первом же прогоне).
+            var back = {};
+            (step.moved || []).forEach(function (m) { back[m.to] = m.from; });
+            (step.spawn || []).concat(step.spawned || []).forEach(function (x) {
+              if (x.detonated) return;
+              var pre = back[x.at] === undefined ? x.at : back[x.at];
+              if (step.cleared.indexOf(pre) >= 0) {
+                bad = "спецфигура родилась в стёртой клетке " + pre + " (после падения " + x.at + ")";
+              }
+            });
+            visual = reconstruct(visual, step);
+          }
+          checked++;
+          if (visual.join(",") !== g.cells.join(",")) {
+            var i = visual.findIndex(function (v, k) { return v !== g.cells[k]; });
+            bad = "seed " + seed + ", ход " + (m + 1) + ": экран показал бы " + visual[i] +
+                  " в клетке " + i + ", а движок — " + g.cells[i];
+          }
+        }
+      }
+      if (bad) return bad;
+
+      // Детерминированный случай «звезда + бомба»: в переборе он выпадает редко
+      // (нужны две спецфигуры рядом), а именно он и рождал «бомбы-призраки».
+      var g2 = board5(7, 7, [[3, 3, M.SPECIAL_STAR], [3, 4, M.SPECIAL_BOMB]]);
+      var before2 = g2.cells.slice();
+      var res2 = M.play(g2, 3 * 7 + 3, 3 * 7 + 4);
+      var v2 = before2.slice();
+      var sw = res2.steps[0].swaps;
+      v2[sw[0]] = before2[sw[1]]; v2[sw[1]] = before2[sw[0]];
+      var det = 0;
+      for (var n = 1; n < res2.steps.length; n++) {
+        var st = res2.steps[n];
+        if (st.shuffled) { v2 = g2.cells.slice(); continue; }
+        det += (st.spawned || []).filter(function (x) { return x.detonated; }).length;
+        v2 = reconstruct(v2, st);
+      }
+      if (det !== M.STAR_BOMB_TURNS) return "в фикстуре «звезда + бомба» протухших бомб " + det +
+                                            ", ожидалось " + M.STAR_BOMB_TURNS;
+      if (v2.join(",") !== g2.cells.join(",")) return "фикстура «звезда + бомба»: экран разошёлся с движком";
+      var ghosts = v2.filter(function (v) { return v === M.SPECIAL_BOMB; }).length;
+      if (ghosts) return "после детонации на поле осталось " + ghosts + " бомб — это те самые призраки";
+      return "";
+    });
+
+    check("корона и ＋5 ходов не исключают друг друга", function () {
+      // Просьба Andr'а 15 октября: свайп, собравший пятёрку И ещё одну линию, должен дать
+      // и корону, и пять ходов. Раньше форма «съедала» бонус.
+      // Фон — шахматка из 0 и 1, чтобы цвета 3 и 4 были свободны (с фоном из четырёх
+      // цветов первая версия фикстуры сама же и создавала линию — проверка это поймала).
+      var cells = [];
+      for (var r = 0; r < 7; r++) {
+        for (var c = 0; c < 7; c++) cells.push((r + c) % 2);
+      }
+      cells[0 * 7 + 3] = 4; cells[1 * 7 + 3] = 4; cells[3 * 7 + 3] = 4; cells[4 * 7 + 3] = 4;
+      cells[2 * 7 + 2] = 4;                       // это поедет в дыру (2,3) и закроет пятёрку
+      cells[2 * 7 + 3] = 3;                       // а это приедет в (2,2) и закроет тройку
+      cells[2 * 7 + 0] = 3; cells[2 * 7 + 1] = 3;
+      var g = boardFrom(cells, { rows: 7, cols: 7, kinds: 5 });
+      if (M.findRuns(g).length) return "до хода уже есть линия — фикстура негодная";
+
+      var res = M.play(g, 2 * 7 + 2, 2 * 7 + 3);
+      if (!res.ok) return "ход отвергнут: " + res.reason;
+      var step = res.steps[1];
+      if (g.cells.filter(function (v) { return v === M.SPECIAL_CROWN; }).length !== 1) {
+        return "короны нет (хотя собраны две линии)";
+      }
+      // сравниваем с ЛИТЕРАЛОМ 5, а не с константой: иначе обнуление самой константы
+      // сделало бы проверку вечно зелёной (это же правило выше, в строке 421)
+      if (step.bonus !== 5) return "бонуса нет: в шаге " + step.bonus + ", ожидалось 5";
+      if (g.bonusMoves !== 5) return "на партии подарено " + g.bonusMoves + ", ожидалось 5";
+      return "";
+    });
+
     // ------------------------------------------------------------------ вся партия
     check("партия всегда заканчивается: ходов сыграно ровно «25 + подаренные»", function () {
       var longest = 0, bonuses = 0;

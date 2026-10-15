@@ -187,32 +187,37 @@
   function clusters(runs) {
     var groups = [];
     runs.forEach(function (run) {
-      var mine = {};
-      run.cells.forEach(function (i) { mine[i] = true; });
-      var hit = null;
-        groups.forEach(function (g) {
-          if (hit) return;
-          for (var k = 0; k < run.cells.length; k++) {
-            if (g.map[run.cells[k]]) { hit = g; break; }
-          }
-        });
-      if (hit) {
-        hit.runs.push(run);
-        run.cells.forEach(function (i) { if (!hit.map[i]) { hit.map[i] = true; hit.cells.push(i); } });
-      } else {
-        var g2 = { runs: [run], map: mine, cells: run.cells.slice() };
-        groups.push(g2);
+      var hits = [];
+      groups.forEach(function (g, idx) {
+        for (var k = 0; k < run.cells.length; k++) { if (g.map[run.cells[k]]) { hits.push(idx); return; } }
+      });
+      if (!hits.length) {
+        var map = {};
+        run.cells.forEach(function (i) { map[i] = true; });
+        groups.push({ runs: [run], map: map, cells: run.cells.slice() });
+        return;
       }
+      // Склеиваем ВСЕ задетые группы, а не только первую: иначе одна клетка могла попасть
+      // в два кластера, и спецфигура рождалась в клетке, которую этот же шаг стирает
+      // (нашел тест-инвариант 15 октября).
+      var target = groups[hits[0]];
+      var absorb = function (other) {
+        other.runs.forEach(function (r) { target.runs.push(r); });
+        other.cells.forEach(function (i) { if (!target.map[i]) { target.map[i] = true; target.cells.push(i); } });
+      };
+      for (var k = hits.length - 1; k >= 1; k--) { absorb(groups[hits[k]]); groups.splice(hits[k], 1); }
+      absorb({ runs: [run], cells: run.cells });
+      run.cells.forEach(function (i) { if (!target.map[i]) { target.map[i] = true; target.cells.push(i); } });
     });
     return groups;
   }
 
   /**
-   * Что заслуживает эта фигура:
+   * Что заслуживает эта фигура (только ФОРМА; бонус ＋5 за длину считает collapse — иначе
+   * группа не могла бы дать и корону, и ходы):
    *   "crown" — «крест»: и горизонталь, и вертикаль, и всего 7+ клеток (например пятёрка
    *             по вертикали и тройка вбок от середины) → 💫 корона;
    *   "star"  — есть и горизонталь, и вертикаль (Т, Г, небольшой плюс) → ⭐ звезда;
-   *   "five"  — один отрезок из 5+ → дополнительные ходы;
    *   "bomb"  — один отрезок ровно из 4 → бомба;
    *   null    — обычная тройка.
    * Порядок именно такой: пересечение важнее пятёрки (собрать «крест» труднее, чем просто
@@ -220,10 +225,10 @@
    */
   function decideShape(cluster) {
     var dirs = {};
-    var longest = 0;
+    var longest = 0;   // longest больше не порождает "five": ＋5 ходов считаются в collapse
+                       // по длине отрезка, иначе пятёрка «съедала» бы фигуру той же группы
     cluster.runs.forEach(function (r) { dirs[r.dir] = true; longest = Math.max(longest, r.len); });
     if (dirs.h && dirs.v) return cluster.cells.length >= 7 ? "crown" : "star";
-    if (longest >= 5) return "five";
     if (longest === 4) return "bomb";
     return null;
   }
@@ -561,7 +566,10 @@
       // По его правилу: «появляются три бомбы и сразу после этого взрываются».
       // Каждая из трёх бьёт как обычная бомба (и может зацепить четвёртую — цепная реакция
       // работает через тот же fire), а spawned оформлению покажет момент рождения.
-      spawned.forEach(function (s) { fire(s.at); });
+      spawned.forEach(function (s) { fire(s.at); s.detonated = true; });
+      // detonated — важно для экрана: эти бомбы показаны ТОЛЬКО как вспышка в своей
+      // клетке, но в поле их нет (они израсходовались в этом же шаге). Без метки
+      // страницы рисовали бомбы, которых не существует (замер: 3 случая на 10 845 ходов).
     } else {
       if (isSpecial(va)) fire(a, vb);
       if (isSpecial(vb)) fire(b, va);
@@ -688,10 +696,20 @@
     var twoLines = crownGroup >= 0;
 
     groups.forEach(function (group, gi) {
-      var shape = allowCreate ? (twoLines ? (gi === crownGroup ? "crown" : null) : decideShape(group)) : null;
-      if (shape === "five") {
-        if (game._bonusLeft > 0) { game._bonusLeft -= 1; bonus += EXTRA_MOVES_FOR_FIVE; }
-      } else if (shape === "star" || shape === "bomb" || shape === "crown") {
+      // «Пятёрка» платит ВСЕГДА, даже если из этой же фигуры выходит корона или звезда:
+      // 15 октября Andr попросил не выбирать между наградой за длину и наградой за форму
+      // (раньше они исключали друг друга — gatherShape возвращал либо "five", либо фигуру).
+      var runs5 = group.runs.some(function (r) { return r.len >= 5; });
+      if (allowCreate && runs5 && game._bonusLeft > 0) {
+        game._bonusLeft -= 1;
+        bonus += EXTRA_MOVES_FOR_FIVE;
+      }
+
+      var shape = allowCreate ? decideShape(group) : null;
+      if (shape === "five") shape = null;              // её щедрость уже учтена выше
+      if (twoLines) shape = (gi === crownGroup) ? "crown" : null;   // остальные кластеры
+                                                                    // дают только ＋5, не фигурки
+      if (shape === "star" || shape === "bomb" || shape === "crown") {
         if (room() <= 0) shape = null;                 // бюджет хода исчерпан
         else { take(); spawn.push({ at: spawnCell(group, swapA, swapB, shape), type: shape }); }
       }
