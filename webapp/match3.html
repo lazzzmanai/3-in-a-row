@@ -348,6 +348,14 @@
     .card .big { font-size: 46px; font-weight: 800; letter-spacing: -.03em; font-variant-numeric: tabular-nums; margin: 2px 0 0; }
     .card p { margin: 6px 0 14px; font-size: 13.5px; color: var(--ink-soft); }
 
+    /* доска: список мест; своя строка подсвечена */
+    .ranks { text-align: left; margin: 10px 0 14px; font-size: 14px; }
+    .ranks div { display: flex; gap: 9px; justify-content: space-between; padding: 3px 0; }
+    .ranks .me { font-weight: 700; background: var(--panel); border-radius: 10px; padding: 3px 8px; }
+    .ranks .pos { min-width: 22px; color: var(--ink-soft); }
+    .ranks .pts { font-variant-numeric: tabular-nums; }
+    .ranks p { margin: 0; color: var(--ink-soft); }
+
     /* легенда спецфигур: одна строка на правило, без простыни */
     .rules { text-align: left; margin: 10px 0 14px; font-size: 13.5px; color: var(--ink); }
     .rules div { display: flex; gap: 9px; align-items: baseline; margin-bottom: 7px; }
@@ -403,6 +411,7 @@
   <p class="hint" id="hint">
     Тяни кристаллик к соседу — или выбери два по очереди.
     <button class="linklike" id="rules-btn" type="button">правила</button>
+    <button class="linklike" id="board-btn" type="button">🏆 лучшие</button>
   </p>
 
   <div class="toast" id="toast"></div>
@@ -416,6 +425,16 @@
         <button class="act" id="send">Передать боту</button>
         <button class="act secondary" id="again">Ещё раз</button>
         <button class="act secondary" id="close">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="sheet" id="board-sheet" hidden>
+    <div class="card">
+      <h2>🏆 Лучшие партии</h2>
+      <div class="ranks" id="ranks"></div>
+      <div class="btns">
+        <button class="act secondary" id="board-close">Закрыть</button>
       </div>
     </div>
   </div>
@@ -449,6 +468,31 @@
     var TG = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
     var TOKEN = (TG && TG.initDataUnsafe && TG.initDataUnsafe.start_param) || params.get("tok") || "";
     var SELFTEST = params.get("selftest") === "1";
+    // Топ и «кто я» бот кладёт в ссылку: у статичного приложения нет своего сервера,
+    // а доску Andr просил показать внутри игры, а не в карточке питомца.
+    var ME = params.get("me") || "";
+    var BOARD = decodeBoard(params.get("lb"));
+
+    /** Развернуть `lb`: base64 → «имя:очки|...». Ссылка не должна раздуваться от кириллицы,
+     *  поэтому бот кладёт топ в base64, а не в percent-encoding. */
+    function decodeBoard(raw) {
+      if (!raw) { return []; }
+      try {
+        var b64 = String(raw).replace(/-/g, "+").replace(/_/g, "/");
+        while (b64.length % 4) { b64 += "="; }
+        var bin = atob(b64);
+        var bytes = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) { bytes[i] = bin.charCodeAt(i); }
+        var text = new TextDecoder("utf-8").decode(bytes);
+        return text.split("|").filter(Boolean).map(function (chunk) {
+          var at = chunk.lastIndexOf(":");
+          var score = Number(chunk.slice(at + 1));
+          return isFinite(score) && at > 0 ? { name: chunk.slice(0, at), score: score } : null;
+        }).filter(Boolean);
+      } catch (e) {
+        return [];                     // битая ссылка = доска пуста, но игра живёт
+      }
+    }
 
     // правила пришли из match3_core.js; без него игра не начинается, и это видно
     if (!window.Match3) {
@@ -476,6 +520,9 @@
     var picked = -1;         // выбранная клетка (режим «выбери два по очереди»)
     var dragFrom = -1;       // клетка, с которой начался свайп
     var shown = 0;           // очки, показанные на экране (дорастают по ходу каскада)
+    var mineBest = 0;        // сколько я набрал в этой сессии (для доски)
+    var sent = false;        // ушёл ли результат боту
+    var sendTimer = null;
     var best = loadBest();
 
     function loadBest() {
@@ -495,6 +542,48 @@
       if (kind === STAR) return "⭐ звезда";
       if (kind === CROWN) return "💫 корона";
       return COLOR[kind] + " " + SHAPE[kind];
+    }
+
+    // ───────── 🏆 доска прямо в игре ─────────
+    /* Таблица приходит из ссылки и обновляется локально своим же результатом: приложение
+       закрывается в момент sendData, поэтому «посмотреть своё место после партии» иначе
+       просто негде было бы показать. */
+    function boardWithMine() {
+      var rows = BOARD.map(function (r) { return { name: r.name, score: r.score, me: r.name === ME }; });
+      if (mineBest > 0) {
+        var found = false;
+        rows.forEach(function (r) {
+          if (r.name !== ME) return;
+          found = true;
+          r.score = Math.max(r.score, mineBest);
+        });
+        if (!found) rows.push({ name: ME, score: mineBest, me: true });
+      }
+      rows.sort(function (a, b) { return b.score - a.score; });
+      return rows;
+    }
+
+    function renderBoard() {
+      var rows = boardWithMine();
+      var box = document.getElementById("ranks");
+      if (!rows.length) {
+        box.innerHTML = "<p>Пока пусто. Доведи партию до конца — ты можешь быть первым 🥇</p>";
+        return;
+      }
+      box.innerHTML = rows.map(function (r, i) {
+        var name = escapeHtml(r.name || "Безымянный");
+        return '<div class="' + (r.me ? "me" : "") + '"><span class="pos">' + (i + 1) + ".</span>" +
+               "<span>" + name + (r.me ? " · ты" : "") + '</span><span class="pts">' +
+               nice(r.score) + "</span></div>";
+      }).join("");
+    }
+
+    function escapeHtml(text) {
+      return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    function nice(score) {
+      return String(score).replace(/\B(?=(\d{3})+(?!\d))/g, "\u2009");
     }
 
     // ───────── эффекты поля ─────────
@@ -955,30 +1044,33 @@
     function finish() {
       var goal = M.target(game);
       var took = game.moves + game.bonusMoves - game.movesLeft;
+      if (game.score > mineBest) { mineBest = game.score; }
+      var rank = 0, total = 0;
+      boardWithMine().forEach(function (r, i) {
+        total++;
+        if (r.name === ME && !rank) { rank = i + 1; }
+      });
+
       document.getElementById("endScore").textContent = game.score;
       document.getElementById("endTitle").textContent = game.score >= goal ? "Цель взята" : "Партия окончена";
 
-      var note;
-      if (game.score > best) {
-        best = game.score; saveBest(best);
-        note = "новый рекорд · " + plural(took, ["ход", "хода", "ходов"]) + " сыграно";
-      } else {
-        note = "цель — " + goal + ", сыграно " + took + " " + plural(took, ["ход", "хода", "ходов"]) +
-               (game.bonusMoves ? " (с " + game.bonusMoves + " подаренными)" : "");
-      }
+      var note = game.score > best ? "новый рекорд · " : "";
+      note += plural(took, ["ход", "хода", "ходов"]) + " · место в таблице: " +
+              (rank ? rank + "-е из " + total : "—");
+      if (game.score < goal) { note += " · цель " + goal; }
       document.getElementById("endNote").textContent = note;
 
       var send = document.getElementById("send");
       if (inTelegramApp()) {
         send.disabled = false;
-        send.textContent = "Передать боту";
-        send.onclick = function () {
-          send.disabled = true;
-          TG.sendData(JSON.stringify({
-            g: "match3", tok: TOKEN, score: game.score, moves: took
-          }));
-          // sendData сам закрывает приложение — бот получит это сообщение как ответ
-        };
+        send.textContent = "Отправить результат";
+        send.onclick = function () { reportNow(); };
+        // Автоотправка: без неё закрытое крестиком приложение молча съедало партию
+        // (именно так у Andr'я и осталась пустая таблица лидеров).
+        if (sendTimer) { window.clearTimeout(sendTimer); }
+        // Через секунду после конца партии: игрок успевает увидеть очки и место,
+        // а счёт не теряется, если он закроет окно крестиком.
+        sendTimer = window.setTimeout(reportNow, 1000);
       } else {
         send.disabled = true;
         send.textContent = "Открой игру через бота";
@@ -987,7 +1079,23 @@
           "очки никуда не ушли: это окно не из Telegram. " + note;
       }
       document.getElementById("sheet").hidden = false;
+      renderBoard();
       hud();
+    }
+
+    /** Отправить счёт боту и закрыться. Одна партия = один уход; повтор не страшен:
+     *  бот хранит только лучший результат, а токен живёт до истечения срока. */
+    function reportNow() {
+      var send = document.getElementById("send");
+      if (sent || !inTelegramApp()) { return; }
+      sent = true;
+      if (sendTimer) { window.clearTimeout(sendTimer); sendTimer = null; }
+      send.disabled = true;
+      send.textContent = "Отправляю…";
+      TG.sendData(JSON.stringify({
+        g: "match3", tok: TOKEN, score: game.score, moves: game.moves + game.bonusMoves - game.movesLeft
+      }));
+      // sendData сам закрывает приложение — бот получит это сообщение как ответ
     }
 
     // -------------------------------------------------------------- запуск партии
@@ -996,6 +1104,9 @@
     function start(seed) {
       game = M.newGame({ seed: seed, rows: 7, cols: 7, kinds: 5, moves: 25 });
       shown = 0;
+      sent = false;                       // новая партия — новый результат, который надо отдать
+      document.getElementById("again").textContent = "Ещё раз · отправить и закрыть";
+      if (sendTimer) { window.clearTimeout(sendTimer); sendTimer = null; }
       setPicked(-1);
       busy = false;
       document.getElementById("sheet").hidden = true;
@@ -1037,6 +1148,13 @@
       };
       document.getElementById("rules-close").onclick = function () {
         document.getElementById("rules").hidden = true;
+      };
+      document.getElementById("board-btn").onclick = function () {
+        renderBoard();
+        document.getElementById("board-sheet").hidden = false;
+      };
+      document.getElementById("board-close").onclick = function () {
+        document.getElementById("board-sheet").hidden = true;
       };
     }
 
