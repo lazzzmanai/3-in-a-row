@@ -349,12 +349,16 @@
     .card p { margin: 6px 0 14px; font-size: 13.5px; color: var(--ink-soft); }
 
     /* доска: список мест; своя строка подсвечена */
-    .ranks { text-align: left; margin: 10px 0 14px; font-size: 14px; }
+    .ranks { text-align: left; margin: 10px 0 6px; font-size: 14px; }
     .ranks div { display: flex; gap: 9px; justify-content: space-between; padding: 3px 0; }
     .ranks .me { font-weight: 700; background: var(--panel); border-radius: 10px; padding: 3px 8px; }
     .ranks .pos { min-width: 22px; color: var(--ink-soft); }
     .ranks .pts { font-variant-numeric: tabular-nums; }
     .ranks p { margin: 0; color: var(--ink-soft); }
+
+    /* когда снят список — игрок должен видеть, что доска в ссылке это снимок карточки */
+    .age { display: block; text-align: center; font-size: 12px; color: var(--ink-soft); margin: 0 0 10px; }
+    .build { text-align: center; font-size: 11.5px; color: var(--ink-soft); margin: 8px 0 0; }
 
     /* легенда спецфигур: одна строка на правило, без простыни */
     .rules { text-align: left; margin: 10px 0 14px; font-size: 13.5px; color: var(--ink); }
@@ -433,7 +437,9 @@
     <div class="card">
       <h2>🏆 Лучшие партии</h2>
       <div class="ranks" id="ranks"></div>
+      <span class="age" id="ranks-age"></span>
       <div class="btns">
+        <button class="act" id="board-live" type="button">🔄 Показать живую таблицу в чате</button>
         <button class="act secondary" id="board-close">Закрыть</button>
       </div>
     </div>
@@ -457,6 +463,7 @@
       <div class="btns">
         <button class="act secondary" id="rules-close">Понятно</button>
       </div>
+      <p class="build" id="build">сборка —</p>
     </div>
   </div>
 
@@ -472,6 +479,13 @@
     // а доску Andr просил показать внутри игры, а не в карточке питомца.
     var ME = params.get("me") || "";
     var BOARD = decodeBoard(params.get("lb"));
+    // Когда бот снял этот снимок (секунды). Без метки игрок не отличит актуальную таблицу
+    // от той, что карточка носит в себе с утра.
+    var AT = Number(params.get("at")) || 0;
+    // Номер сборки: бот обязан менять его при каждой выкладке на Pages. Telegram и
+    // GitHub Pages кэшируют HTML, и по одному и тому же адресу можно играть старой
+    // страницей ещё минуты три после загрузки новой — поэтому он и в ссылке, и на экране.
+    var BUILD = params.get("v") || "";
 
     /** Развернуть `lb`: base64 → «имя:очки|...». Ссылка не должна раздуваться от кириллицы,
      *  поэтому бот кладёт топ в base64, а не в percent-encoding. */
@@ -520,7 +534,9 @@
     var picked = -1;         // выбранная клетка (режим «выбери два по очереди»)
     var dragFrom = -1;       // клетка, с которой начался свайп
     var shown = 0;           // очки, показанные на экране (дорастают по ходу каскада)
-    var mineBest = 0;        // сколько я набрал в этой сессии (для доски)
+    var mineBest = 0;        // лучший счёт СЕССИИ (несколько партий подряд в одном окне)
+    var mineMoves = 0;       // сколько ходов было в той лучшей партии
+    var mineOver = true;     // доиграна ли она (недоигранную бот пометит отдельно)
     var sent = false;        // ушёл ли результат боту
     var sendTimer = null;
     var best = loadBest();
@@ -547,7 +563,13 @@
     // ───────── 🏆 доска прямо в игре ─────────
     /* Таблица приходит из ссылки и обновляется локально своим же результатом: приложение
        закрывается в момент sendData, поэтому «посмотреть своё место после партии» иначе
-       просто негде было бы показать. */
+       просто негде было бы показать.
+
+       ВАЖНО про свежую доску: то в ссылке — снимок, бот снял его, когда рисовал кнопку.
+       Карточка лежит в чате, и если открыть игру с неё через полчаса, список будет
+       получасовой давности. Поэтому на доске есть строка «обновлено в HH:MM» (метку `at=`
+       кладёт бот) и кнопка «показать в чате»: она просит таблицу у бота через тот же
+       sendData, и бот отвечает живой выборкой из базы плюс новой кнопкой игры. */
     function boardWithMine() {
       var rows = BOARD.map(function (r) { return { name: r.name, score: r.score, me: r.name === ME }; });
       if (mineBest > 0) {
@@ -563,9 +585,30 @@
       return rows;
     }
 
+    /** «обновлено в 14:05» / «ссылке 40 минут» — игрок должен видеть, откуда список. */
+    function boardAge() {
+      if (!AT) { return "доска пришла вместе со ссылкой"; }
+      // `at` — СЕКУНДЫ (бот кладет unix-время), а Date.now() — миллисекунды. Без
+      // умножения проверка на экране выдала «497320 часов назад» — тест поймал это сам.
+      var mins = Math.max(0, Math.round((Date.now() - AT * 1000) / 60000));
+      var stamp = new Date(AT * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+      if (mins <= 1) { return "обновлено только что · " + stamp; }
+      if (mins < 60) { return "обновлено в " + stamp + " · " + mins + " " + plural(mins, ["минуту", "минуты", "минут"]) + " назад"; }
+      var hours = Math.round(mins / 60);
+      return "обновлено в " + stamp + " · " + hours + " " + plural(hours, ["час", "часа", "часов"]) + " назад";
+    }
+
     function renderBoard() {
       var rows = boardWithMine();
       var box = document.getElementById("ranks");
+      var age = document.getElementById("ranks-age");
+      if (age) { age.textContent = boardAge(); }
+      var live = document.getElementById("board-live");
+      if (live) {
+        live.disabled = !inTelegramApp();
+        live.textContent = inTelegramApp() ? "🔄 Показать живую таблицу в чате"
+                                           : "Живая таблица — только из бота";
+      }
       if (!rows.length) {
         box.innerHTML = "<p>Пока пусто. Доведи партию до конца — ты можешь быть первым 🥇</p>";
         return;
@@ -1041,10 +1084,32 @@
     // «Передать боту» честнее выключить, чем делать вид, что очки куда-то ушли.
     function inTelegramApp() { return !!(TG && TG.initData && typeof TG.sendData === "function"); }
 
+    /** Запомнить партию как лучшую в этом окне: в одном открытии их бывает несколько,
+     *  а уходит боту одна строка — и это обязан быть лучший результат, а не «последняя
+     *  криво закрытая партия». */
+    function remember(over) {
+      if (game.score > mineBest) {
+        mineBest = game.score;
+        mineMoves = movesTaken();
+        mineOver = over !== false;
+      } else if (game.score === mineBest && over === true) {
+        mineOver = true;                 // такая же по очкам, но доигранная — честнее
+        mineMoves = movesTaken();
+      }
+      // «рекорд» в шапке и пометка «новый рекорд» живут на устройстве: бот отвечает за
+      // общую доску, а это — память про собственные прошлые партии. saveBest без этого
+      // вызова был мёртвой функцией: счёт никогда не сохранялся и «новый рекорд»
+      // появлялся на каждой партии подряд.
+      if (mineBest > best) {
+        best = mineBest;
+        saveBest(best);
+      }
+    }
+
     function finish() {
       var goal = M.target(game);
       var took = game.moves + game.bonusMoves - game.movesLeft;
-      if (game.score > mineBest) { mineBest = game.score; }
+      remember(true);
       var rank = 0, total = 0;
       boardWithMine().forEach(function (r, i) {
         total++;
@@ -1058,19 +1123,22 @@
       note += plural(took, ["ход", "хода", "ходов"]) + " · место в таблице: " +
               (rank ? rank + "-е из " + total : "—");
       if (game.score < goal) { note += " · цель " + goal; }
+      // «Ещё раз» не отправляет и не закрывает: боту уйдёт лучший результат окна сам —
+      // в конце партии или когда окно закроют. Обещать на кнопке другое было бы враньё.
+      note += " · лучшее из этого окна уйдёт боту само";
       document.getElementById("endNote").textContent = note;
 
       var send = document.getElementById("send");
       if (inTelegramApp()) {
         send.disabled = false;
-        send.textContent = "Отправить результат";
+        send.textContent = "Отправить результат сейчас";
         send.onclick = function () { reportNow(); };
         // Автоотправка: без неё закрытое крестиком приложение молча съедало партию
         // (именно так у Andr'я и осталась пустая таблица лидеров).
         if (sendTimer) { window.clearTimeout(sendTimer); }
-        // Через секунду после конца партии: игрок успевает увидеть очки и место,
-        // а счёт не теряется, если он закроет окно крестиком.
-        sendTimer = window.setTimeout(reportNow, 1000);
+        // sendData ЗАКРЫВАЕТ приложение, поэтому он не в ноль секунд: игрок должен успеть
+        // прочитать очки и своё место, а потом бот ответит в чате и даст свежую кнопку.
+        sendTimer = window.setTimeout(function () { reportNow(); }, 1500);
       } else {
         send.disabled = true;
         send.textContent = "Открой игру через бота";
@@ -1083,19 +1151,53 @@
       hud();
     }
 
-    /** Отправить счёт боту и закрыться. Одна партия = один уход; повтор не страшен:
-     *  бот хранит только лучший результат, а токен живёт до истечения срока. */
+    /** Сколько ходов реально сделано (база + подаренные «пятёрками»). */
+    function movesTaken() { return game.moves + game.bonusMoves - game.movesLeft; }
+
+    /**
+     * Отправить счёт боту и закрыться. Одна партия = один уход; повтор не страшен:
+     * бот хранит только лучший результат, а токен живёт час.
+     * Уходит ЛУЧШЕЕ из этого окна (смотри remember), а не «то, что на экране».
+     * `over` у недоигранной партии false: очки всё равно его, они заработаны, а молча
+     * их выбросить — значит снова получить пустую таблицу там, где человек играл.
+     */
     function reportNow() {
       var send = document.getElementById("send");
       if (sent || !inTelegramApp()) { return; }
       sent = true;
       if (sendTimer) { window.clearTimeout(sendTimer); sendTimer = null; }
-      send.disabled = true;
-      send.textContent = "Отправляю…";
+      if (send) {
+        send.disabled = true;
+        send.textContent = "Отправляю…";
+      }
       TG.sendData(JSON.stringify({
-        g: "match3", tok: TOKEN, score: game.score, moves: game.moves + game.bonusMoves - game.movesLeft
+        g: "match3", tok: TOKEN, score: mineBest, moves: mineMoves, over: mineOver
       }));
       // sendData сам закрывает приложение — бот получит это сообщение как ответ
+    }
+
+    /**
+     * Просьба показать ЖИВУЮ таблицу. Доска в ссылке — снимок минуты, когда бот рисовал
+     * кнопку: открыть старую карточку = смотреть вчерашний список. Ответом на этот запрос
+     * бот пришлёт таблицу из базы и новую кнопку игры, где снимок уже сегодняшний.
+     */
+    function askLeaders() {
+      if (!inTelegramApp() || sent) { return; }
+      TG.sendData(JSON.stringify({ g: "match3", tok: TOKEN, req: "leaders" }));
+    }
+
+    /**
+     * Окно закрывают крестиком до конца партии: кнопки «Отправить» игрок не видит, и
+     * очки терялись. `pagehide` — момент, когда WebView реально уходит (не фоновый
+     * тап: на `visibilitychange` мы бы закрывали игру человеку, который просто выглянул
+     * в чат и вернулся). Порог в 3 хода нужен, чтобы случайное «открыл и закрыл» не
+     * плодило строк в доске.
+     */
+    function bindLeaveReport() {
+      window.addEventListener("pagehide", function () {
+        if (!game || game.over || sent || !inTelegramApp()) { return; }
+        if (game.score > 0 && movesTaken() >= 3) { remember(false); reportNow(); }
+      });
     }
 
     // -------------------------------------------------------------- запуск партии
@@ -1105,7 +1207,6 @@
       game = M.newGame({ seed: seed, rows: 7, cols: 7, kinds: 5, moves: 25 });
       shown = 0;
       sent = false;                       // новая партия — новый результат, который надо отдать
-      document.getElementById("again").textContent = "Ещё раз · отправить и закрыть";
       if (sendTimer) { window.clearTimeout(sendTimer); sendTimer = null; }
       setPicked(-1);
       busy = false;
@@ -1144,6 +1245,8 @@
         else document.getElementById("sheet").hidden = true;
       };
       document.getElementById("rules-btn").onclick = function () {
+        var el = document.getElementById("build");
+        if (el) { el.textContent = BUILD ? "сборка " + BUILD : "сборка не указана в ссылке"; }
         document.getElementById("rules").hidden = false;
       };
       document.getElementById("rules-close").onclick = function () {
@@ -1152,6 +1255,9 @@
       document.getElementById("board-btn").onclick = function () {
         renderBoard();
         document.getElementById("board-sheet").hidden = false;
+      };
+      document.getElementById("board-live").onclick = function () {
+        askLeaders();
       };
       document.getElementById("board-close").onclick = function () {
         document.getElementById("board-sheet").hidden = true;
@@ -1166,6 +1272,7 @@
       start(fromLink > 0 ? fromLink : newSeed());
       bindInput();
       bindChrome();
+      bindLeaveReport();
       hud();
     }
   </script>
