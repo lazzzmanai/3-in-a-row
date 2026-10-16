@@ -367,10 +367,10 @@
       return "";
     });
 
-    check("цель партии = 5500 очков для 25 ходов (выбрана по sim_match3.js)", function () {
+    check("цель партии = 4500 очков для 25 ходов (выбрана по sim_match3.js)", function () {
       var g = M.newGame({ seed: 1 });
-      if (M.target(g) !== 5500) return "цель " + M.target(g) + " — пересчитай симуляцией и обнови";
-      if (M.target({ moves: 10 }) !== 2200) return "цель не растёт пропорционально ходам";
+      if (M.target(g) !== 4500) return "цель " + M.target(g) + " — пересчитай симуляцией и обнови";
+      if (M.target({ moves: 10 }) !== 1800) return "цель не растёт пропорционально ходам";
       return "";
     });
 
